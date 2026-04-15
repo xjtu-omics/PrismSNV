@@ -8,9 +8,13 @@
 ![GitHub Issues or Pull Requests](https://img.shields.io/github/issues/xjtu-omics/PrismSNV)
 ![Static Badge](https://img.shields.io/badge/3.10-green?logo=python&label=Python&labelColor=yellow)
 </div>
+
+
 Single-nucleotide variants (SNVs) are central to tumor evolution, yet their functional consequences remain largely unresolved at single-cell resolution. Crucially, it remains unknown how the impact of specific SNVs varies across patients, cell types, or cellular states, hindering mechanistic understanding and therapeutic stratification. Current strategies operate predominantly at the bulk level and depend on population recurrence or evolutionary constraint, capturing signatures of long-term selection rather than direct, acute cellular effects.   
 Here, we present PrismSNV, a single-cell modeling framework that redefines SNVs as endogenous perturbations of cellular state. By quantifying mutation-induced displacement in transcriptomic space, PrismSNV directly measures functional impact and uncovers the dynamic roles of individual SNVs throughout the spatiotemporal evolution of tumors.
+
 <br>
+
 <div align=center><img src="https://github.com/PSSUN/MuleDoc/blob/main/docs/_static/Figure-1.png" height = "500"/></div>
 <br>
 
