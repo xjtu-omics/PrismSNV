@@ -18,7 +18,7 @@ Here, we present PrismSNV, a single-cell modeling framework that redefines SNVs 
 <div align=center><img src="https://github.com/PSSUN/MuleDoc/blob/main/docs/_static/Figure-1.png" height = "500"/></div>
 <br>
 
-Please see [PrismSNV Documents](https://mule.readthedocs.io/en/latest/index.html) for detail.
+Please see [PrismSNV Documents](https://muledoc.readthedocs.io/en/latest/index.html) for detail.
 
 ## ✉️ Contact
 
