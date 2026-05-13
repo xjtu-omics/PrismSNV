@@ -20,6 +20,42 @@ Here, we present PrismSNV, a single-cell modeling framework that redefines SNVs 
 
 Please see [PrismSNV Documents](https://muledoc.readthedocs.io/en/latest/index.html) for detail.
 
+## Local Installation
+
+This guide installs PrismSNV from a local checkout without publishing it to conda.
+
+### 1. Create an environment
+
+```bash
+conda create -n prismsnv python=3.10 -y
+conda activate prismsnv
+```
+
+### 2. Install external command-line dependencies
+
+
+```bash
+conda install -c conda-forge -c bioconda bash samtools bedtools openjdk -y
+```
+
+You also need a VarScan JAR file and should pass it with `--varscan-jar`.
+
+### 3. Install PrismSNV locally
+
+Run this from the repository root:
+
+```bash
+pip install -e .
+```
+
+Use `pip install .` instead if you want a non-editable install.
+
+### 4. Verify the command
+
+```bash
+prismsnv --help
+```
+
 ## ✉️ Contact
 
 If you encounter any issues during use, please try updating STMiner to the latest version. If the issue persists, feel
