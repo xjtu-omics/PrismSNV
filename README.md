@@ -18,7 +18,6 @@ Here, we present PrismSNV, a single-cell modeling framework that redefines SNVs 
 <div align=center><img src="https://github.com/PSSUN/MuleDoc/blob/main/docs/_static/Figure-1.png" height = "500"/></div>
 <br>
 
-Please see [PrismSNV Documents](https://muledoc.readthedocs.io/en/latest/index.html) for detail.
 
 ## Local Installation
 
@@ -55,6 +54,9 @@ Use `pip install .` instead if you want a non-editable install.
 ```bash
 prismsnv --help
 ```
+
+## Usage
+Please see [PrismSNV Documents](https://muledoc.readthedocs.io/en/latest/index.html) for detail.
 
 ## ✉️ Contact
 
