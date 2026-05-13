@@ -1,0 +1,71 @@
+{% set name = "prismsnv" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: https://github.com/xjtu-omics/PrismSNV/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: TODO_REPLACE_WITH_SHA256_AFTER_TAGGING_V0.1.0
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
+  entry_points:
+    - prismsnv = prismsnv.cli:main
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=68
+    - wheel
+  run:
+    - python >=3.10
+    - anndata
+    - bash
+    - bedtools
+    - gawk
+    - leidenalg
+    - matplotlib-base
+    - numpy
+    - openjdk
+    - pandas
+    - pysam
+    - pytorch
+    - pyyaml
+    - python-igraph
+    - scanpy
+    - scipy
+    - scrublet
+    - samtools
+    - tqdm
+    - varscan
+
+test:
+  imports:
+    - prismsnv
+    - prismsnv.train
+    - prismsnv.preprocess
+  commands:
+    - prismsnv --help
+    - prismsnv bam2vcf --help
+    - prismsnv snv2barcode --help
+    - prismsnv pre_train --help
+    - prismsnv snv_effect --help
+
+about:
+  home: https://github.com/xjtu-omics/PrismSNV
+  license: GPL-3.0-or-later
+  license_file: LICENSE
+  summary: Single-cell SNV functional effect analysis toolkit
+  description: |
+    PrismSNV is a single-cell modeling framework for quantifying functional
+    effects of single-nucleotide variants as endogenous perturbations of
+    cellular state.
+
+extra:
+  recipe-maintainers:
+    - TODO_ADD_GITHUB_USERNAME

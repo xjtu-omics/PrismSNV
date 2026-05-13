@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prismsnv"
+version = "0.1.0"
+description = "Single-cell SNV functional effect analysis toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Peisen Sun", email = "sunpeisen@stu.xjtu.edu.cn" },
+  { name = "Kai Ye", email = "kaiye@xjtu.edu.cn" },
+]
+keywords = [
+  "single-cell",
+  "SNV",
+  "variant effect",
+  "perturbation",
+  "bioinformatics",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "anndata",
+  "matplotlib",
+  "numpy",
+  "pandas",
+  "pysam",
+  "PyYAML",
+  "igraph",
+  "leidenalg",
+  "scanpy",
+  "scipy",
+  "scrublet",
+  "torch",
+  "tqdm",
+]
+
+[project.urls]
+Homepage = "https://github.com/xjtu-omics/PrismSNV"
+Documentation = "https://muledoc.readthedocs.io/en/latest/index.html"
+Issues = "https://github.com/xjtu-omics/PrismSNV/issues"
+
+[project.scripts]
+prismsnv = "prismsnv.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"prismsnv.preprocess" = ["bam2vcf.sh"]
