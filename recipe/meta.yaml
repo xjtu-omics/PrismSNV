@@ -30,6 +30,7 @@ requirements:
     - gawk
     - leidenalg
     - matplotlib-base
+    - numba
     - numpy
     - openjdk
     - pandas
