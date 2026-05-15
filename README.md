@@ -60,7 +60,7 @@ Please see [PrismSNV Documents](https://muledoc.readthedocs.io/en/latest/index.h
 
 ## ✉️ Contact
 
-If you encounter any issues during use, please try updating STMiner to the latest version. If the issue persists, feel
+If you encounter any issues during use, please try updating PrismSNV to the latest version. If the issue persists, feel
 free to submit your problem on the issue page or contact us through the following methods:
 
 - Peisen Sun: 📧(sunpeisen@stu.xjtu.edu.cn) / 𝕏(https://x.com/Sun_python)
