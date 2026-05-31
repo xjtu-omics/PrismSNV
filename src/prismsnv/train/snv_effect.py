@@ -1170,7 +1170,12 @@ def _cleanup_distributed() -> None:
 def main(argv: Optional[Iterable[str]] = None) -> None:
     """Command-line entry point for executing the SNV perturbation workflow."""
 
-    parser = argparse.ArgumentParser(description="SNV perturbation workflow")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train or evaluate the SNV perturbation model using aligned RNA and barcode-by-SNV AnnData inputs. "
+            "Exports SNV attention rankings, perturbation scores, and downstream plots for functional effect analysis."
+        )
+    )
     parser.add_argument(
         "-y",
         "--yaml",
