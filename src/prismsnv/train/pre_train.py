@@ -625,7 +625,12 @@ def freeze_encoder_only(model: nn.Module):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Pretrain RNA backbone with gene alignment")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Align pretraining and finetuning RNA AnnData inputs, then train the RNA-only backbone model. "
+            "Writes aligned .h5ad files and a pretrained checkpoint for the downstream SNV effect workflow."
+        )
+    )
     parser.add_argument(
         "-y",
         "--yaml",
