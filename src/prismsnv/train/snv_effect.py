@@ -116,6 +116,18 @@ RANK_WARMUP_EPOCHS = 10
 RANK_MIN_DIFF_SNV = 5
 RANK_START_EPOCH = 11
 
+
+def _save_snv_name_array(path: str, snv_names: Iterable[str], label: str) -> None:
+    """Save the SNV order used by a checkpoint as a plain NumPy string array."""
+
+    parent_dir = os.path.dirname(path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    snv_array = np.asarray([str(name) for name in snv_names], dtype=str)
+    np.save(path, snv_array)
+    log(f"[INFO] Saved {label} ({snv_array.size} SNVs) to: {path}")
+
+
 def _setup_distributed_training(device: Optional[torch.device] = None) -> Tuple[
     bool, int, int, torch.device
 ]:
@@ -817,6 +829,12 @@ def main_run(
     ) = tensors_from_anndata(
         adata_rna, adata_snv, batch_key=rna_batch_key, dense=False
     )
+    if is_rank0:
+        _save_snv_name_array(
+            model_ckpt + ".snvs.npy",
+            snv_names,
+            "initial model SNV list",
+        )
 
     # Build DataLoader
     if isinstance(X_tensor, torch.Tensor) and isinstance(G_tensor, torch.Tensor):
@@ -983,6 +1001,12 @@ def main_run(
 
         if not top_snv_names:
             log("[WARN] No SNVs passed the attention prefilter; skipping scoring.")
+            if is_rank0:
+                _save_snv_name_array(
+                    model_ckpt + ".final_snvs.npy",
+                    [],
+                    "final scored SNV list",
+                )
             _cleanup_distributed()
             return
         df_scores = batch_score_all_snvs(
@@ -1002,6 +1026,11 @@ def main_run(
         scores_path = os.path.join(result_folder, "snv_perturbation_scores.csv")
         if is_rank0:
             df_scores.to_csv(scores_path, index=False)
+            _save_snv_name_array(
+                model_ckpt + ".final_snvs.npy",
+                top_snv_names,
+                "final scored SNV list",
+            )
         if dist.is_initialized():
             dist.barrier()
         log(f"[INFO] Saved cell-type-free SNV perturbation scores to {scores_path}")
@@ -1112,6 +1141,12 @@ def main_run(
         )
         all_attn.to_csv(attn_by_ct_path, index=False)
         all_scores.to_csv(scores_by_ct_path, index=False)
+        final_snv_names = list(dict.fromkeys(all_scores["SNV"].astype(str).tolist()))
+        _save_snv_name_array(
+            model_ckpt + ".final_snvs.npy",
+            final_snv_names,
+            "final scored SNV list",
+        )
 
         log("[INFO] Saved snv_perturbation_scores.")
 
