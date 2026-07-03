@@ -15,6 +15,7 @@ Usage:
 
 Notes:
   --reference requires a readable FASTA index at <reference.fa>.fai
+  Missing BAM indexes are created with samtools index during preflight.
 
 Example:
   $0 \\
@@ -168,19 +169,59 @@ check_file() {
         echo "ERROR: File is not readable: $1" >&2
         error_flag=1
     fi
+}
 
-    if [[ "$1" == *.bam ]]; then
-        if [ -r "${1}.bai" ] || [ -r "${1%.bam}.bai" ]; then
-            return
-        fi
+bam_index_is_readable() {
+    local bam="$1"
 
-        if [ -f "${1}.bai" ] || [ -f "${1%.bam}.bai" ]; then
-            echo "ERROR: Index file is not readable for BAM: $1" >&2
-            error_flag=1
+    [ -r "${bam}.bai" ] || \
+        [ -r "${bam%.bam}.bai" ] || \
+        [ -r "${bam}.csi" ] || \
+        [ -r "${bam%.bam}.csi" ]
+}
+
+bam_index_file_exists() {
+    local bam="$1"
+
+    [ -f "${bam}.bai" ] || \
+        [ -f "${bam%.bam}.bai" ] || \
+        [ -f "${bam}.csi" ] || \
+        [ -f "${bam%.bam}.csi" ]
+}
+
+ensure_bam_index() {
+    local bam="$1"
+    local bam_index="${bam}.bai"
+    local bam_index_tmp="${bam}.tmp.$$.bai"
+
+    if bam_index_is_readable "$bam"; then
+        return
+    fi
+
+    if bam_index_file_exists "$bam"; then
+        echo "ERROR: Index file exists but is not readable for BAM: $bam" >&2
+        error_flag=1
+        return
+    fi
+
+    if ! command -v samtools >/dev/null 2>&1; then
+        return
+    fi
+
+    echo "[`date`] BAM index not found; indexing BAM: $bam"
+    rm -f "$bam_index_tmp"
+    if samtools index -@ "$INNER_THREADS" "$bam" "$bam_index_tmp"; then
+        if mv -f "$bam_index_tmp" "$bam_index"; then
+            echo "[`date`] Created BAM index: $bam_index"
         else
-            echo "ERROR: Index file not found for BAM: $1" >&2
+            rm -f "$bam_index_tmp"
+            echo "ERROR: Could not move temporary BAM index into place: $bam_index" >&2
             error_flag=1
         fi
+    else
+        rm -f "$bam_index_tmp"
+        echo "ERROR: Failed to create index for BAM: $bam" >&2
+        error_flag=1
     fi
 }
 
@@ -260,6 +301,9 @@ fi
 
 for BAM in "${BAM_FILES[@]}"; do
     check_file "$BAM"
+    if [[ "$BAM" == *.bam ]] && [ -f "$BAM" ] && [ -r "$BAM" ]; then
+        ensure_bam_index "$BAM"
+    fi
 done
 
 check_duplicate_bam_prefixes
