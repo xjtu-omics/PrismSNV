@@ -1,4 +1,5 @@
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -7,6 +8,71 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 COMMANDS = ("bam2vcf", "snv2barcode", "pre_train", "snv_effect")
+
+
+def _extract_snv_effect_launcher_args(command_args: list[str]) -> tuple[Optional[int], list[str]]:
+    snv_args: list[str] = []
+    n_gpu: Optional[int] = None
+    skip_next = False
+    for index, arg in enumerate(command_args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in {"--n_gpu", "--n-gpu"}:
+            if index + 1 >= len(command_args):
+                raise SystemExit("ERROR: --n_gpu requires an integer value.\n")
+            try:
+                n_gpu = int(command_args[index + 1])
+            except ValueError as exc:
+                raise SystemExit("ERROR: --n_gpu must be an integer greater than 0.\n") from exc
+            skip_next = True
+        elif arg.startswith("--n_gpu=") or arg.startswith("--n-gpu="):
+            value = arg.split("=", 1)[1]
+            try:
+                n_gpu = int(value)
+            except ValueError as exc:
+                raise SystemExit("ERROR: --n_gpu must be an integer greater than 0.\n") from exc
+        else:
+            snv_args.append(arg)
+    if n_gpu is not None and n_gpu <= 0:
+        raise SystemExit("ERROR: --n_gpu must be an integer greater than 0.\n")
+    return n_gpu, snv_args
+
+
+def _already_under_torchrun() -> bool:
+    return int(os.environ.get("WORLD_SIZE", "1")) > 1 or "LOCAL_RANK" in os.environ
+
+
+def _run_snv_effect_with_optional_torchrun(command_args: list[str]) -> None:
+    n_gpu, snv_args = _extract_snv_effect_launcher_args(command_args)
+    should_launch_distributed = (
+        "-h" not in snv_args
+        and "--help" not in snv_args
+        and n_gpu is not None
+        and n_gpu > 1
+        and not _already_under_torchrun()
+    )
+    if should_launch_distributed:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "torch.distributed.run",
+                "--standalone",
+                f"--nproc_per_node={n_gpu}",
+                "-m",
+                "prismsnv.cli",
+                "snv_effect",
+                *snv_args,
+            ]
+        )
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+        return
+
+    from .train.snv_effect import main as snv_effect_main
+
+    snv_effect_main(snv_args)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
@@ -46,13 +112,13 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 Trains or evaluates the SNV perturbation model, then exports
                 attention, perturbation score tables, and downstream plots.
                 Example:
-                  prismsnv snv_effect -y <train_config.yaml>
+                  prismsnv snv_effect --n_gpu 3 -y <train_config.yaml>
 
             Typical workflow:
               1. prismsnv bam2vcf ...
               2. prismsnv snv2barcode <snv2barcode_config.yaml>
               3. prismsnv pre_train -y <train_config.yaml>
-              4. prismsnv snv_effect -y <train_config.yaml>
+              4. prismsnv snv_effect --n_gpu 3 -y <train_config.yaml>
 
             Use 'prismsnv <subcommand> --help' for subcommand-specific options.
             """
@@ -83,9 +149,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
         pre_train_main(command_args)
     elif command == "snv_effect":
-        from .train.snv_effect import main as snv_effect_main
-
-        snv_effect_main(command_args)
+        _run_snv_effect_with_optional_torchrun(command_args)
     elif command == "snv2barcode":
         if len(command_args) != 1 or command_args[0] in {"-h", "--help"}:
             parser.exit(
