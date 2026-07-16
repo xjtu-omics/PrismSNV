@@ -3,8 +3,7 @@ set -euo pipefail
 
 usage() {
     cat >&2 <<EOF
-Usage:
-  $0 \\
+usage: prismsnv bam2vcf \\
     --outer-jobs <N> \\
     --inner-threads <N> \\
     --reference <reference.fa> \\
@@ -13,12 +12,26 @@ Usage:
     --out-dir <output_dir> \\
     --bam-files <bam1> [bam2 ...]
 
-Notes:
+Run the Bash SNV-calling pipeline for one or more BAM files. The pipeline
+generates filtered VCF files after removing RNA-editing sites.
+
+options:
+  -h, --help                 show this help message and exit
+  --outer-jobs <N>           number of BAM files to process in parallel
+  --inner-threads <N>        number of samtools threads used for each BAM file
+  --reference <reference.fa> reference genome FASTA with a readable .fai index
+  --varscan-jar <VarScan.jar>
+                             path to VarScan.jar
+  --rna-edit-bed <BED>       BED file containing RNA-editing sites to remove
+  --out-dir <output_dir>     output directory for generated SNV-calling files
+  --bam-files <bam...>       one or more input BAM files
+
+notes:
   --reference requires a readable FASTA index at <reference.fa>.fai
   Missing BAM indexes are created with samtools index during preflight.
 
-Example:
-  $0 \\
+example:
+  prismsnv bam2vcf \\
     --outer-jobs 6 \\
     --inner-threads 4 \\
     --reference genome.fa \\

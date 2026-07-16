@@ -10,6 +10,120 @@ from typing import Iterable, Optional
 COMMANDS = ("bam2vcf", "snv2barcode", "pre_train", "snv_effect")
 
 
+def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
+    descriptions = {
+        "bam2vcf": (
+            "Run the Bash SNV-calling pipeline for one or more BAM files. "
+            "The pipeline generates filtered VCF files after removing RNA-editing sites."
+        ),
+        "snv2barcode": (
+            "Build per-sample and merged barcode-by-SNV AnnData matrices from "
+            "BAM, VCF, and barcode inputs defined in a YAML configuration file."
+        ),
+        "pre_train": (
+            "Align pretraining and finetuning RNA AnnData inputs, then train the "
+            "RNA-only backbone model for the downstream SNV effect workflow."
+        ),
+        "snv_effect": (
+            "Train or evaluate the SNV perturbation model using aligned RNA and "
+            "barcode-by-SNV AnnData inputs, then export functional-effect results."
+        ),
+    }
+    examples = {
+        "bam2vcf": (
+            "prismsnv bam2vcf --outer-jobs 6 --inner-threads 4 \\\n"
+            "  --reference genome.fa --varscan-jar VarScan.jar \\\n"
+            "  --rna-edit-bed RNA_edit.bed --out-dir ./snv_call_out \\\n"
+            "  --bam-files sample1.bam sample2.bam"
+        ),
+        "snv2barcode": "prismsnv snv2barcode snv2barcode_config.yaml",
+        "pre_train": "prismsnv pre_train -y train_config.yaml",
+        "snv_effect": "prismsnv snv_effect --n_gpu 3 -y train_config.yaml",
+    }
+    parser = argparse.ArgumentParser(
+        prog=f"prismsnv {command}",
+        description=descriptions[command],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"Example:\n  {examples[command]}",
+    )
+
+    if command == "bam2vcf":
+        parser.add_argument(
+            "--outer-jobs",
+            required=True,
+            metavar="N",
+            help="Number of BAM files to process in parallel.",
+        )
+        parser.add_argument(
+            "--inner-threads",
+            required=True,
+            metavar="N",
+            help="Number of samtools threads used for each BAM file.",
+        )
+        parser.add_argument(
+            "--reference",
+            required=True,
+            metavar="FASTA",
+            help="Reference genome FASTA with a readable .fai index.",
+        )
+        parser.add_argument(
+            "--varscan-jar",
+            required=True,
+            metavar="JAR",
+            help="Path to VarScan.jar.",
+        )
+        parser.add_argument(
+            "--rna-edit-bed",
+            required=True,
+            metavar="BED",
+            help="BED file containing RNA-editing sites to remove.",
+        )
+        parser.add_argument(
+            "--out-dir",
+            required=True,
+            metavar="DIR",
+            help="Output directory for generated SNV-calling files.",
+        )
+        parser.add_argument(
+            "--bam-files",
+            required=True,
+            nargs="+",
+            metavar="BAM",
+            help="One or more input BAM files.",
+        )
+    elif command == "snv2barcode":
+        parser.add_argument(
+            "config",
+            metavar="CONFIG",
+            help="YAML file defining BAM, VCF, barcode, and output settings.",
+        )
+    else:
+        if command == "snv_effect":
+            parser.add_argument(
+                "--n_gpu",
+                "--n-gpu",
+                type=int,
+                metavar="N",
+                help="Number of GPUs used to launch distributed training.",
+            )
+        parser.add_argument(
+            "-y",
+            "--yaml",
+            "--config",
+            dest="yaml_path",
+            metavar="CONFIG",
+            help="Path to the YAML configuration file.",
+        )
+        parser.add_argument(
+            "yaml_path_pos",
+            nargs="?",
+            metavar="CONFIG",
+            help="Positional alternative for the YAML configuration file path.",
+        )
+
+    return parser
+
+
 def _extract_snv_effect_launcher_args(command_args: list[str]) -> tuple[Optional[int], list[str]]:
     snv_args: list[str] = []
     n_gpu: Optional[int] = None
@@ -143,6 +257,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             f"argument command: invalid choice: {command!r} "
             f"(choose from {', '.join(repr(item) for item in COMMANDS)})"
         )
+    if any(arg in {"-h", "--help"} for arg in command_args):
+        _build_subcommand_parser(command).parse_args(command_args)
+        return
 
     if command == "pre_train":
         from .train.pre_train import main as pre_train_main
@@ -151,15 +268,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     elif command == "snv_effect":
         _run_snv_effect_with_optional_torchrun(command_args)
     elif command == "snv2barcode":
-        if len(command_args) != 1 or command_args[0] in {"-h", "--help"}:
-            parser.exit(
-                0 if command_args and command_args[0] in {"-h", "--help"} else 2,
-                "Usage: prismsnv snv2barcode <path_to_config.yaml>\n",
-            )
+        snv2barcode_args = _build_subcommand_parser(command).parse_args(command_args)
 
         from .preprocess.snv2barcode import main as snv2barcode_main
 
-        snv2barcode_main(command_args[0])
+        snv2barcode_main(snv2barcode_args.config)
     elif command == "bam2vcf":
         from .preprocess import __file__ as preprocess_init
 

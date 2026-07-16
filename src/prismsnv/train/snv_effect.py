@@ -1206,6 +1206,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     """Command-line entry point for executing the SNV perturbation workflow."""
 
     parser = argparse.ArgumentParser(
+        prog="prismsnv snv_effect",
         description=(
             "Train or evaluate the SNV perturbation model using aligned RNA and barcode-by-SNV AnnData inputs. "
             "Exports SNV attention rankings, perturbation scores, and downstream plots for functional effect analysis."
@@ -1216,11 +1217,13 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         "--yaml",
         "--config",
         dest="yaml_path",
+        metavar="CONFIG",
         help="Path to YAML configuration file containing all script options.",
     )
     parser.add_argument(
         "yaml_path_pos",
         nargs="?",
+        metavar="CONFIG",
         help="Positional alternative for the YAML configuration file path.",
     )
     args = parser.parse_args(argv)

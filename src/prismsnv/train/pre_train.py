@@ -626,6 +626,7 @@ def freeze_encoder_only(model: nn.Module):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
+        prog="prismsnv pre_train",
         description=(
             "Align pretraining and finetuning RNA AnnData inputs, then train the RNA-only backbone model. "
             "Writes aligned .h5ad files and a pretrained checkpoint for the downstream SNV effect workflow."
@@ -636,11 +637,13 @@ def main(argv=None):
         "--yaml",
         "--config",
         dest="yaml_path",
+        metavar="CONFIG",
         help="Path to YAML configuration file containing script options.",
     )
     parser.add_argument(
         "yaml_path_pos",
         nargs="?",
+        metavar="CONFIG",
         help="Positional alternative for the YAML configuration file path.",
     )
     args = parser.parse_args(argv)
