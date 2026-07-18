@@ -302,6 +302,19 @@ def pretrain_rna_backbone(
     use_batch_embedding = batch_ids_tensor is not None
     log("======== Pretraining Configuration ========")
     log(f"[Config] The mu activation: {mu_activation}")
+    log(f"[Config] Reconstruction loss: {'NB' if use_nb else 'MSE'}")
+    if use_nb and mu_activation != "umi":
+        log(
+            f"[WARNING] use_nb=True expects raw UMI counts and a 'umi' mu_activation, "
+            f"but mu_activation={mu_activation!r}. The NB likelihood may be mismatched "
+            "with the decoder output scale."
+        )
+    if (not use_nb) and mu_activation == "umi":
+        log(
+            "[WARNING] use_nb=False (MSE) expects corrected/log-normalized data, but "
+            "mu_activation='umi' applies an exponential to the decoder output. This can "
+            "cause a scale mismatch; consider 'identity' or 'softplus'."
+        )
     log(f"[Config] Total epochs: {epochs}")
     log(f"[Config] Use batch_embedding: {use_batch_embedding}")
     log(f"[Config] The batch_key: {batch_key}")
