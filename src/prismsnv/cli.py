@@ -7,7 +7,7 @@ import textwrap
 from pathlib import Path
 from typing import Iterable, Optional
 
-COMMANDS = ("bam2vcf", "snv2barcode", "pre_train", "snv_effect")
+COMMANDS = ("bam2vcf", "snv2barcode", "pre_train", "snv_effect", "get_template")
 
 
 def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
@@ -28,6 +28,10 @@ def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
             "Train or evaluate the SNV perturbation model using aligned RNA and "
             "barcode-by-SNV AnnData inputs, then export functional-effect results."
         ),
+        "get_template": (
+            "Write a train_config.yaml template into the current directory for use "
+            "with the pre_train and snv_effect commands."
+        ),
     }
     examples = {
         "bam2vcf": (
@@ -39,6 +43,7 @@ def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
         "snv2barcode": "prismsnv snv2barcode snv2barcode_config.yaml",
         "pre_train": "prismsnv pre_train -y train_config.yaml",
         "snv_effect": "prismsnv snv_effect --n_gpu 3 -y train_config.yaml",
+        "get_template": "prismsnv get_template --output train_config.yaml",
     }
     parser = argparse.ArgumentParser(
         prog=f"prismsnv {command}",
@@ -96,6 +101,20 @@ def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
             "config",
             metavar="CONFIG",
             help="YAML file defining BAM, VCF, barcode, and output settings.",
+        )
+    elif command == "get_template":
+        parser.add_argument(
+            "-o",
+            "--output",
+            dest="output",
+            default="train_config.yaml",
+            metavar="PATH",
+            help="Destination path for the generated template (default: train_config.yaml).",
+        )
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Overwrite the destination file if it already exists.",
         )
     else:
         if command == "snv_effect":
@@ -189,6 +208,35 @@ def _run_snv_effect_with_optional_torchrun(command_args: list[str]) -> None:
     snv_effect_main(snv_args)
 
 
+def _write_train_config_template(
+    parser: argparse.ArgumentParser, output: str, force: bool
+) -> None:
+    from importlib import resources
+
+    destination = Path(output)
+    if destination.exists() and not force:
+        parser.exit(
+            1,
+            f"ERROR: {destination} already exists. Use --force to overwrite it.\n",
+        )
+
+    try:
+        template_text = (
+            resources.files("prismsnv.templates")
+            .joinpath("train_config.yaml")
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        parser.exit(1, f"ERROR: Cannot locate the bundled train_config.yaml template: {exc}\n")
+
+    parent = destination.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+
+    destination.write_text(template_text, encoding="utf-8")
+    print(f"Wrote train_config.yaml template to {destination}")
+
+
 def main(argv: Optional[Iterable[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
@@ -228,7 +276,14 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 Example:
                   prismsnv snv_effect --n_gpu 3 -y <train_config.yaml>
 
+              get_template
+                Writes a train_config.yaml template into the current directory
+                for the pre_train and snv_effect commands.
+                Example:
+                  prismsnv get_template --output train_config.yaml
+
             Typical workflow:
+              0. prismsnv get_template
               1. prismsnv bam2vcf ...
               2. prismsnv snv2barcode <snv2barcode_config.yaml>
               3. prismsnv pre_train -y <train_config.yaml>
@@ -267,6 +322,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         pre_train_main(command_args)
     elif command == "snv_effect":
         _run_snv_effect_with_optional_torchrun(command_args)
+    elif command == "get_template":
+        template_args = _build_subcommand_parser(command).parse_args(command_args)
+        _write_train_config_template(parser, template_args.output, template_args.force)
     elif command == "snv2barcode":
         snv2barcode_args = _build_subcommand_parser(command).parse_args(command_args)
 

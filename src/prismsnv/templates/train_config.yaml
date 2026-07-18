@@ -1,0 +1,100 @@
+# Replace paths and values with your own dataset.
+result_folder: ./prism_snv_result
+
+pre_train:
+  align:
+    # Reference RNA AnnData used for alignment pretraining.
+    pretrain_adata: /path/to/pretrain.h5ad
+    # RNA AnnData from the finetune dataset for alignment.
+    finetune_adata: "/path/to/finetune.h5ad"
+    # Expected doublet rate for scrublet.
+    expected_doublet_rate: 0.05
+    # Run scrublet doublet removal during alignment.
+    remove_scrublet: false
+    # Remove cells with mitochondrial percentage above this threshold.
+    mt_percent: 15
+  training:
+    # Pretraining epochs for the RNA backbone.
+    num_epochs: 200
+    # Latent dimension.
+    latent_dim: 128
+    # Activation on decoder mean for UMI-like counts.
+    mu_activation: umi
+    # Use negative binomial likelihood for gene counts.
+    use_nb: true
+    # Batch size for pretraining.
+    batch_size: 512
+    # Learning rate.
+    lr: 0.001
+    # Weight decay (L2 regularization).
+    weight_decay: 1e-5
+    # Epochs to linearly ramp KL weight.
+    kl_warmup_epochs: 20
+    # Max KL weight after warmup.
+    beta_max: 3.0
+    # Gradient clipping max norm.
+    grad_clip: 5.0
+    # Training device ("cuda" or "cpu").
+    device: cuda
+    # If true, train on highly variable genes only.
+    hvg_only: false
+    # obs field name for batch labels.
+    batch_key: batch
+    # Batch embedding dimension.
+    batch_emb_dim: 16
+    # Adversarial loss weight for reducing batch effects.
+    lambda_adv: 1.0
+    # Hidden dimension of the adversarial discriminator.
+    disc_hidden_dim: 128
+
+snv_eff:
+  # AnnData path with SNV features for training.
+  adata_snv: "/path/to/snv_matrix.h5ad"
+  # Optional CSV path with SNV annotations (for extra metadata only).
+  # Leave empty or remove this key to run without annotation metadata.
+  ann_csv:
+  # Minimum read count for keeping an SNV.
+  min_cnt: 50
+  # Keep top N SNVs after filtering/ranking (for plots only).
+  n_top: 50
+  # Batch size for SNV effect training.
+  batch_size_train: 64
+  # Training epochs for the SNV effect model.
+  num_epochs: 200
+  # Latent dimension shared with the RNA backbone.
+  latent_dim: 128
+  # SNV embedding dimension.
+  snv_emb_dim: 64
+  # Number of SNVs attended in attention aggregation.
+  top_k_attention: 5000
+  # Batch size for precomputing attention weights.
+  attn_batch: 128
+  # Batch size used by score_by_celltype() when ranking SNV attention within each cell type.
+  # If omitted, it falls back to attn_batch.
+  score_attn_batch: 128
+  # Batch size used by score_by_celltype() for per-cell counterfactual SNV scoring.
+  # If omitted, it falls back to attn_batch.
+  score_cell_batch: 128
+  # Random seed for reproducibility.
+  seed: 42
+  # Maximum weight of the rank-loss term that compares true SNV assignments against same-batch shuffled negatives.
+  rank_lambda_max: 0.05
+  # Maximum margin enforced between true-pair loss and shuffled-negative loss in the rank-loss term.
+  rank_margin_max: 0.05
+  # Pretrained backbone checkpoint and gene list are loaded from result_folder.
+  # Freeze RNA backbone parameters during SNV training.
+  freeze_backbone: true
+  # Column name for cell type labels.
+  celltype_key: cell_cluster
+  # Leiden clustering resolution used for cell clustering.
+  cluster_resolution: 0.4
+  # If true, score SNVs without splitting by cell type.
+  cell_type_free: false
+  # Device for SNV effect training.
+  device: cuda
+  # If true, skip training and only evaluate a saved checkpoint. Use false for training, true for eval only.
+  eval_only: false
+  # Number of SNV pairs per sparse decoding chunk. Typical range: 20000-50000, depending on memory.
+  pair_chunk: 20000
+  # SNV obs field name for sample/batch metadata.
+  batch_key: sample

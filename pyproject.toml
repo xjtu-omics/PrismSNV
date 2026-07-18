@@ -59,3 +59,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "prismsnv.preprocess" = ["bam2vcf.sh"]
+"prismsnv.templates" = ["train_config.yaml"]
