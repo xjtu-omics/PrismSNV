@@ -477,6 +477,7 @@ def _infer_n_batches_from_state_dict(state_dict):
 def _encode_finetune_latents(
     adata_path: str,
     checkpoint_path: str,
+    gene_list: list[str],
     latent_dim: int,
     mu_activation: str,
     batch_emb_dim: int,
@@ -487,6 +488,16 @@ def _encode_finetune_latents(
 ):
     log("[INFO] Encoding finetune AnnData with trained encoder to populate 'X_latent'.")
     adata = sc.read_h5ad(adata_path)
+    missing_genes = [
+        gene_name for gene_name in gene_list if gene_name not in adata.var_names
+    ]
+    if missing_genes:
+        raise ValueError(
+            f"Finetune AnnData is missing {len(missing_genes)} genes required by the "
+            f"pretrained encoder: {missing_genes[:5]}"
+        )
+    adata = adata[:, gene_list].copy()
+
     state_dict = torch.load(checkpoint_path, map_location=device)
     n_batches = _infer_n_batches_from_state_dict(state_dict)
 
@@ -739,12 +750,13 @@ def main(argv=None):
         "batch_emb_dim": batch_emb_dim,
     })
 
-    checkpoint_path, _ = pretrain_rna_backbone(**training_kwargs)
+    checkpoint_path, gene_list = pretrain_rna_backbone(**training_kwargs)
 
     try:
         _encode_finetune_latents(
             adata_path=aligned_ft,
             checkpoint_path=checkpoint_path,
+            gene_list=gene_list,
             latent_dim=training_kwargs["latent_dim"],
             mu_activation=training_kwargs["mu_activation"],
             batch_emb_dim=batch_emb_dim,
@@ -753,6 +765,8 @@ def main(argv=None):
             device=training_kwargs.get("device", "cuda"),
             batch_size=training_kwargs.get("batch_size", 512),
         )
+    except ValueError:
+        raise
     except Exception as exc:  # pragma: no cover - best-effort enrichment
         log(f"[WARNING] Failed to precompute 'X_latent' for finetune AnnData: {exc}")
 
