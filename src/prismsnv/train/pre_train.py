@@ -81,10 +81,10 @@ class RNAOnlyBackbone(nn.Module):
             n_genes: int,
             latent_dim: int = 128,
             mu_activation: str = "umi",
-            n_batches: int = None,
+            n_batches: Optional[int] = None,
             batch_emb_dim: int = 16,  # Dimensionality of the optional batch embedding
             lambda_adv: float = 0.0,
-            disc_hidden_dim: int = None,
+            disc_hidden_dim: Optional[int] = None,
     ):
         super().__init__()
         self.n_genes = n_genes
@@ -164,7 +164,7 @@ class RNAOnlyBackbone(nn.Module):
         else:
             return decoder_output
 
-    def decode(self, latent: torch.Tensor, batch_indices: torch.Tensor = None):
+    def decode(self, latent: torch.Tensor, batch_indices: Optional[torch.Tensor] = None):
         """Decode latent representations into gene expression means and dispersion parameters.
 
         Parameters
@@ -203,7 +203,7 @@ class RNAOnlyBackbone(nn.Module):
         log_prob_nb = (term_lgamma + term_dispersion + term_counts).sum(dim=1)  # [B]
         return -log_prob_nb.mean()
 
-    def loss_fn(self, x: torch.Tensor, use_nb: bool = True, beta: float = 1.0, batch_ids: torch.Tensor = None):
+    def loss_fn(self, x: torch.Tensor, use_nb: bool = True, beta: float = 1.0, batch_ids: Optional[torch.Tensor] = None):
         mu, log_var = self.encode(x)
         z = self.reparameterize(mu, log_var)
         mu_out, theta = self.decode(z, batch_indices=batch_ids)
@@ -248,7 +248,7 @@ def pretrain_rna_backbone(
         batch_key: str = "batch",
         batch_emb_dim: int = 16,
         lambda_adv: float = 0.0,
-        disc_hidden_dim: int = None,
+        disc_hidden_dim: Optional[int] = None,
         lambda_adv_warmup_epochs: int = 10,
 ):
     set_seed(42)
