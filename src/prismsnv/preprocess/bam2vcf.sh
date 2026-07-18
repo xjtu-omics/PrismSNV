@@ -221,11 +221,11 @@ ensure_bam_index() {
         return
     fi
 
-    echo "[`date`] BAM index not found; indexing BAM: $bam"
+    echo "[$(date)] BAM index not found; indexing BAM: $bam"
     rm -f "$bam_index_tmp"
     if samtools index -@ "$INNER_THREADS" "$bam" "$bam_index_tmp"; then
         if mv -f "$bam_index_tmp" "$bam_index"; then
-            echo "[`date`] Created BAM index: $bam_index"
+            echo "[$(date)] Created BAM index: $bam_index"
         else
             rm -f "$bam_index_tmp"
             echo "ERROR: Could not move temporary BAM index into place: $bam_index" >&2
@@ -290,7 +290,7 @@ check_duplicate_bam_prefixes() {
     done
 }
 
-echo "[`date`] Running preflight checks."
+echo "[$(date)] Running preflight checks."
 
 check_command samtools
 check_command java
@@ -327,7 +327,7 @@ if [ "$error_flag" -ne 0 ]; then
     exit 1
 fi
 
-echo "[`date`] Preflight checks passed."
+echo "[$(date)] Preflight checks passed."
 
 check_chrom_naming_compat() {
     local ref_fa="$1"
@@ -392,22 +392,22 @@ run_one_bam() {
     local VCF="${OUT_DIR}/${PREFIX}.f1804q20.vcf"
     local VCF_NO_EDIT="${OUT_DIR}/${PREFIX}.f1804q20.no_rna_editing.vcf"
 
-    echo "[`date`] START: $PREFIX"
+    echo "[$(date)] START: $PREFIX"
 
     # Step 1: Filter BAM
     if has_nonempty_file "$BAM_FILT"; then
-        echo "[`date`] SKIP existing filtered BAM: $BAM_FILT"
+        echo "[$(date)] SKIP existing filtered BAM: $BAM_FILT"
     else
-        echo "[`date`] Filtering BAM: $BAM -> $BAM_FILT"
+        echo "[$(date)] Filtering BAM: $BAM -> $BAM_FILT"
         run_stdout_to_file "$BAM_FILT" \
             samtools view -@ "$INNER_THREADS" -b -F 1804 -q 20 "$BAM"
     fi
 
     # Step 2: Index BAM
     if bam_index_exists "$BAM_FILT"; then
-        echo "[`date`] SKIP existing BAM index: $BAM_FILT"
+        echo "[$(date)] SKIP existing BAM index: $BAM_FILT"
     else
-        echo "[`date`] Indexing BAM: $BAM_FILT"
+        echo "[$(date)] Indexing BAM: $BAM_FILT"
         local BAM_INDEX="${BAM_FILT}.bai"
         local BAM_INDEX_TMP="${BAM_FILT}.tmp.$$.bai"
         rm -f "$BAM_INDEX_TMP"
@@ -417,18 +417,18 @@ run_one_bam() {
 
     # Step 3: Generate mpileup
     if has_nonempty_file "$MPILEUP"; then
-        echo "[`date`] SKIP existing mpileup: $MPILEUP"
+        echo "[$(date)] SKIP existing mpileup: $MPILEUP"
     else
-        echo "[`date`] Generating mpileup: $BAM_FILT -> $MPILEUP"
+        echo "[$(date)] Generating mpileup: $BAM_FILT -> $MPILEUP"
         run_stdout_to_file "$MPILEUP" \
             samtools mpileup -B -q 20 -Q 20 -f "$REF_FA" "$BAM_FILT"
     fi
 
     # Step 4: Call SNVs with VarScan
     if has_nonempty_file "$VCF"; then
-        echo "[`date`] SKIP existing VarScan VCF: $VCF"
+        echo "[$(date)] SKIP existing VarScan VCF: $VCF"
     else
-        echo "[`date`] Calling SNVs with VarScan: $MPILEUP -> $VCF"
+        echo "[$(date)] Calling SNVs with VarScan: $MPILEUP -> $VCF"
         run_stdout_to_file "$VCF" \
             java -jar "$VARSCAN_JAR" mpileup2snp "$MPILEUP" \
                 --min-coverage 8 \
@@ -439,14 +439,14 @@ run_one_bam() {
 
     # Step 5: Remove RNA editing sites
     if has_nonempty_file "$VCF_NO_EDIT"; then
-        echo "[`date`] SKIP existing RNA-editing filtered VCF: $VCF_NO_EDIT"
+        echo "[$(date)] SKIP existing RNA-editing filtered VCF: $VCF_NO_EDIT"
     else
-        echo "[`date`] Removing RNA editing sites: $VCF -> $VCF_NO_EDIT"
+        echo "[$(date)] Removing RNA editing sites: $VCF -> $VCF_NO_EDIT"
         run_stdout_to_file "$VCF_NO_EDIT" \
             bedtools intersect -header -v -a "$VCF" -b "$RNA_EDIT_BED"
     fi
 
-    echo "[`date`] FINISHED: $PREFIX"
+    echo "[$(date)] FINISHED: $PREFIX"
     echo "Output: $VCF_NO_EDIT"
 }
 
@@ -471,8 +471,8 @@ for pid in "${pids[@]}"; do
 done
 
 if [ "$job_failed" -ne 0 ]; then
-    echo "[`date`] ERROR: One or more BAM jobs failed." >&2
+    echo "[$(date)] ERROR: One or more BAM jobs failed." >&2
     exit 1
 fi
 
-echo "[`date`] ALL JOBS COMPLETED."
+echo "[$(date)] ALL JOBS COMPLETED."
