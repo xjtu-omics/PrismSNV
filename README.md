@@ -74,3 +74,5 @@ free to submit your problem on the issue page or contact us through the followin
 
 - Peisen Sun: 📧(sunpeisen@stu.xjtu.edu.cn) / 𝕏(https://x.com/Sun_python)
 - Kai Ye: 📧(kaiye@xjtu.edu.cn)
+
+<img src="https://raw.githubusercontent.com/trinib/trinib/82213791fa9ff58d3ca768ddd6de2489ec23ffca/images/footer.svg" width="100%">
