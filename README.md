@@ -160,10 +160,10 @@ If you encounter any issues during use, please try updating PrismSNV to the late
 | **Peisen Sun** | [sunpeisen@stu.xjtu.edu.cn](mailto:sunpeisen@stu.xjtu.edu.cn) | [@Sun_python](https://x.com/Sun_python) |
 | **Kai Ye** | [kaiye@xjtu.edu.cn](mailto:kaiye@xjtu.edu.cn) | — |
 
-<img src="https://raw.githubusercontent.com/trinib/trinib/82213791fa9ff58d3ca768ddd6de2489ec23ffca/images/footer.svg" width="100%">
-
 ---
 
 ## 📄 License
 
 This project is licensed under the [GNU General Public License v3.0 (GPLv3)](./LICENSE).
+
+<img src="https://raw.githubusercontent.com/trinib/trinib/82213791fa9ff58d3ca768ddd6de2489ec23ffca/images/footer.svg" width="100%">
