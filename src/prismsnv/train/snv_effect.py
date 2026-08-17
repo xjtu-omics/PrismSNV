@@ -1292,6 +1292,38 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         parser.error("score_attn_batch and score_cell_batch must be integer values greater than 0.")
     if score_attn_batch <= 0 or score_cell_batch <= 0:
         parser.error("score_attn_batch and score_cell_batch must be greater than 0.")
+    try:
+        min_cnt = int(min_cnt)
+        n_top = int(n_top)
+        batch_size_train = int(batch_size_train)
+        num_epochs = int(num_epochs)
+        latent_dim = int(latent_dim)
+        snv_emb_dim = int(snv_emb_dim)
+        top_k_attention = int(top_k_attention)
+        attn_batch = int(attn_batch)
+        pair_chunk = int(pair_chunk)
+        seed = int(seed)
+    except (TypeError, ValueError):
+        parser.error(
+            "min_cnt, n_top, batch_size_train, num_epochs, latent_dim, snv_emb_dim, "
+            "top_k_attention, attn_batch, and pair_chunk must be integer values, and "
+            "seed must be an integer."
+        )
+    for int_key, int_value in (
+        ("min_cnt", min_cnt),
+        ("n_top", n_top),
+        ("batch_size_train", batch_size_train),
+        ("latent_dim", latent_dim),
+        ("snv_emb_dim", snv_emb_dim),
+        ("top_k_attention", top_k_attention),
+        ("attn_batch", attn_batch),
+        ("pair_chunk", pair_chunk),
+    ):
+        if int_value <= 0:
+            parser.error(f"{int_key} must be an integer greater than 0 (got {int_value}).")
+    # num_epochs is only required when training actually runs; eval_only skips it.
+    if not eval_only and num_epochs <= 0:
+        parser.error(f"num_epochs must be an integer greater than 0 (got {num_epochs}).")
     pre_train_cfg = yaml_full.get("pre_train", {})
     pre_train_training_cfg = (
         pre_train_cfg.get("training", {}) if isinstance(pre_train_cfg, dict) else {}
