@@ -65,11 +65,11 @@ snv_eff:
   latent_dim: 128
   # SNV embedding dimension.
   snv_emb_dim: 64
-  # Number of SNVs attended in attention aggregation.
+  # Number of SNVs retained by latent-contribution screening.
   top_k_attention: 5000
-  # Batch size for precomputing attention weights.
+  # Batch size for latent-contribution screening.
   attn_batch: 128
-  # Batch size used by score_by_celltype() when ranking SNV attention within each cell type.
+  # Batch size used for latent-contribution ranking within each cell type.
   # If omitted, it falls back to attn_batch.
   score_attn_batch: 128
   # Batch size used by score_by_celltype() for per-cell counterfactual SNV scoring.
