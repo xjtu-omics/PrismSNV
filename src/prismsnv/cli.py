@@ -272,7 +272,8 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
               snv_effect
                 Trains or evaluates the SNV perturbation model, then exports
-                attention, perturbation score tables, and downstream plots.
+                latent-contribution rankings, perturbation score tables, and
+                downstream plots.
                 Example:
                   prismsnv snv_effect --n_gpu 3 -y <train_config.yaml>
 
