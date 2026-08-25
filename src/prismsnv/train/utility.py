@@ -4,7 +4,7 @@ import os
 import random
 import re
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -1196,14 +1196,18 @@ def score_by_celltype(
     eps: float = 1e-6,
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
     batch_key: str = "batch",
+    rank_snvs_fn: Optional[Callable[..., pd.DataFrame]] = None,
 ):
     """
     For each cell type:
-      1) Rank SNVs by their mean attention weights (optionally keeping the top-K).
+      1) Rank SNVs with the supplied screening function (optionally keeping the top-K).
       2) Perform counterfactual scoring and summarize the most affected genes.
     Returns a dictionary mapping each group to the tuple
-    ``(top_attention_dataframe, counterfactual_scores_dataframe)``.
+    ``(top_screening_dataframe, counterfactual_scores_dataframe)``.
     """
+    if rank_snvs_fn is None:
+        rank_snvs_fn = rank_snvs_by_attention
+
     is_dist = dist.is_available() and dist.is_initialized()
     rank = dist.get_rank() if is_dist else 0
     # Align shared cells.
@@ -1262,25 +1266,25 @@ def score_by_celltype(
             _n_batches_ct,
         ) = tensors_from_anndata(adata_rna_ct, adata_snv_ct, batch_key=batch_key)
 
-        # Step 1: rank SNVs and broadcast.
-        attn_top_k = adata_snv_ct.n_vars if top_k_attention == -1 else top_k_attention
-        top_attn_df = None
+        # Step 1: rank SNVs with the configured screening function and broadcast.
+        screening_top_k = adata_snv_ct.n_vars if top_k_attention == -1 else top_k_attention
+        top_snv_df = None
         if rank == 0:
-            top_attn_df = rank_snvs_by_attention(
+            top_snv_df = rank_snvs_fn(
                 model,
                 X_tensor,
                 G_tensor,
                 adata_snv_ct,
-                top_k=attn_top_k,
+                top_k=screening_top_k,
                 batch_size=attn_batch,
                 pair_chunk=pair_chunk,
                 device=device,
             )
-            top_attn_df = top_attn_df[top_attn_df["SNV"].isin(valid_snv_names)].reset_index(
+            top_snv_df = top_snv_df[top_snv_df["SNV"].isin(valid_snv_names)].reset_index(
                 drop=True
             )
-            # Keep attention order, drop duplicates.
-            top_snv_names = list(dict.fromkeys(top_attn_df["SNV"].tolist()))
+            # Keep screening order, drop duplicates.
+            top_snv_names = list(dict.fromkeys(top_snv_df["SNV"].tolist()))
             local_empty = 1 if len(top_snv_names) == 0 else 0
         else:
             top_snv_names = []
@@ -1293,10 +1297,16 @@ def score_by_celltype(
             all_empty = flag.item() == dist.get_world_size()
             if all_empty:
                 if rank == 0:
-                    log(f"[INFO] group {group_name} has no SNVs passing attention filters, skip.")
+                    log(
+                        f"[INFO] group {group_name} has no SNVs passing "
+                        "screening filters, skip."
+                    )
                 continue
         elif local_empty:
-            log(f"[INFO] group {group_name} has no SNVs passing attention filters, skip.")
+            log(
+                f"[INFO] group {group_name} has no SNVs passing "
+                "screening filters, skip."
+            )
             continue
 
         # Step B: broadcast SNV list.
@@ -1334,12 +1344,12 @@ def score_by_celltype(
         )
         df_scores.insert(0, "celltype", group_name)
         if rank == 0:
-            top_attn_df.insert(0, "celltype", group_name)
-            results[group_name] = (top_attn_df, df_scores)
+            top_snv_df.insert(0, "celltype", group_name)
+            results[group_name] = (top_snv_df, df_scores)
         # Memory cleanup.
         del adata_rna_ct, adata_snv_ct
         del X_tensor, G_tensor, B_tensor
-        del top_attn_df, df_scores
+        del top_snv_df, df_scores
         del snv_matrix
 
         gc.collect()

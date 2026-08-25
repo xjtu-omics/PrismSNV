@@ -2,7 +2,7 @@ import argparse
 import datetime
 import os
 import warnings
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import yaml
 from anndata import AnnData, read_h5ad
 from numba.core.errors import NumbaPendingDeprecationWarning
+from scipy import sparse
 from torch.nn.parallel import DistributedDataParallel
 
 warnings.filterwarnings(
@@ -26,6 +27,7 @@ try:
         RESOLUTION,
         _align_celltypes_for_scores,
         _distributed_env_ready,
+        _dense_batch_from_matrix,
         _encode_latent_representation,
         _filter_snv_to_standard_chromosomes,
         _normalise_score_column_minmax,
@@ -46,7 +48,6 @@ try:
         make_lazy_collate_fn,
         LazyAnndataDataset,
         plot_cell_perturbation_umap,
-        rank_snvs_by_attention,
         resolve_eval_only_checkpoint,
         score_by_celltype,
         set_seed,
@@ -60,6 +61,7 @@ except ImportError:
         RESOLUTION,
         _align_celltypes_for_scores,
         _distributed_env_ready,
+        _dense_batch_from_matrix,
         _encode_latent_representation,
         _filter_snv_to_standard_chromosomes,
         _normalise_score_column_minmax,
@@ -80,7 +82,6 @@ except ImportError:
         make_lazy_collate_fn,
         LazyAnndataDataset,
         plot_cell_perturbation_umap,
-        rank_snvs_by_attention,
         resolve_eval_only_checkpoint,
         score_by_celltype,
         set_seed,
@@ -166,6 +167,130 @@ def _setup_distributed_training(device: Optional[torch.device] = None) -> Tuple[
     return use_distributed, rank, world_size, device
 
 
+@torch.no_grad()
+def mean_latent_contribution_per_snv(
+    model: nn.Module,
+    rna_matrix: Union[torch.Tensor, np.ndarray, sparse.spmatrix],
+    snv_matrix: Union[torch.Tensor, np.ndarray, sparse.spmatrix],
+    batch_size: int = 256,
+    pair_chunk: int = DEFAULT_PAIR_CHUNK,
+    device: Optional[torch.device] = None,
+) -> np.ndarray:
+    """Compute mean latent flip contribution per SNV across observed cells."""
+    if device is None:
+        device = next(model.parameters()).device
+
+    model.eval()
+
+    num_snvs = snv_matrix.shape[1]
+    sum_contribution = torch.zeros(num_snvs, device=device)
+    count_contribution = torch.zeros(num_snvs, device=device)
+
+    snv_embedding_matrix = model.snv_embedding.weight.to(device)
+    projection_weight = model.snv_proj.weight.to(device)
+
+    num_cells = rna_matrix.shape[0]
+    for batch_start, batch_end in chunk_iter(num_cells, batch_size):
+        expression_batch = _dense_batch_from_matrix(
+            rna_matrix,
+            slice(batch_start, batch_end),
+            torch.float32,
+            device=device,
+        )
+        snv_batch = _dense_batch_from_matrix(
+            snv_matrix,
+            slice(batch_start, batch_end),
+            torch.float32,
+            device=device,
+        )
+
+        latent_mean, _latent_log_var = model.encode(expression_batch)
+        nonzero_pairs = (snv_batch != 0).nonzero(as_tuple=False)
+        if nonzero_pairs.numel() == 0:
+            continue
+
+        num_pairs = nonzero_pairs.shape[0]
+        logits = torch.empty(num_pairs, device=device)
+        projected_norms = torch.empty(num_pairs, device=device)
+
+        for pair_start, pair_end in chunk_iter(num_pairs, pair_chunk):
+            cell_index_slice = nonzero_pairs[pair_start:pair_end, 0]
+            snv_index_slice = nonzero_pairs[pair_start:pair_end, 1]
+
+            z_gather = latent_mean[cell_index_slice]
+            e_gather = snv_embedding_matrix[snv_index_slice]
+            cond_inp = torch.cat([z_gather, e_gather], dim=1)
+            e_cond = model.cond_mlp(cond_inp)
+
+            attn_inp = torch.cat([z_gather, e_cond], dim=1)
+            logits[pair_start:pair_end] = model.attn_mlp(attn_inp).squeeze(-1)
+
+            # Projection bias cancels between observed and sign-flipped states.
+            projected = F.linear(e_cond, projection_weight, bias=None)
+            projected_norms[pair_start:pair_end] = torch.linalg.vector_norm(
+                projected,
+                ord=2,
+                dim=1,
+            )
+
+        logits = torch.clamp(logits, max=50.0)
+        exp_logits = torch.exp(logits)
+
+        current_batch_size = expression_batch.shape[0]
+        denominator = torch.zeros(current_batch_size, device=device)
+        denominator.index_add_(0, nonzero_pairs[:, 0], exp_logits)
+
+        gathered_denominator = denominator[nonzero_pairs[:, 0]] + 1e-12
+        attention_weights = exp_logits / gathered_denominator
+        latent_contribution = 2.0 * attention_weights * projected_norms
+
+        segment_snv_indices = nonzero_pairs[:, 1]
+        sum_contribution.index_add_(
+            0,
+            segment_snv_indices,
+            latent_contribution,
+        )
+        count_contribution.index_add_(
+            0,
+            segment_snv_indices,
+            torch.ones_like(latent_contribution),
+        )
+
+    mean_contribution = (
+        sum_contribution / torch.clamp(count_contribution, min=1.0)
+    ).clamp(min=0.0)
+    return mean_contribution.detach().cpu().numpy()
+
+
+def rank_snvs_by_latent_contribution(
+    model: nn.Module,
+    rna_matrix: Union[torch.Tensor, np.ndarray, sparse.spmatrix],
+    snv_matrix: Union[torch.Tensor, np.ndarray, sparse.spmatrix],
+    adata_snv: AnnData,
+    top_k: int = 2000,
+    batch_size: int = 256,
+    pair_chunk: int = DEFAULT_PAIR_CHUNK,
+    device: Optional[torch.device] = None,
+) -> pd.DataFrame:
+    """Rank SNVs by their mean latent flip contribution."""
+    scores = mean_latent_contribution_per_snv(
+        model,
+        rna_matrix,
+        snv_matrix,
+        batch_size=batch_size,
+        pair_chunk=pair_chunk,
+        device=device,
+    )
+    order = np.argsort(scores)[::-1]
+    top_idx = order[:top_k]
+    return pd.DataFrame(
+        {
+            "SNV": np.asarray(adata_snv.var_names)[top_idx],
+            "Latent_Contribution_Score": scores[top_idx],
+        }
+    )
+
+
 class SNVPerturbationModel(nn.Module):
     """
     Attention-based SNV perturbation model.
@@ -208,7 +333,7 @@ class SNVPerturbationModel(nn.Module):
         self.attn_mlp = nn.Sequential(
             nn.Linear(latent_dim + snv_emb_dim, 128),
             nn.Tanh(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.05),
             nn.Linear(128, 1),
         )
         # Conditional embedding module: maps the concatenated latent state [z, e_j]
@@ -216,7 +341,7 @@ class SNVPerturbationModel(nn.Module):
         self.cond_mlp = nn.Sequential(
             nn.Linear(self.latent_dim + self.snv_emb_dim, self.snv_emb_dim),
             nn.SiLU(),  # SiLU yields smoother gradients
-            nn.Dropout(0.1),
+            nn.Dropout(0.05),
             nn.Linear(self.snv_emb_dim, self.snv_emb_dim),
         )
 
@@ -435,8 +560,34 @@ class SNVPerturbationModel(nn.Module):
         snv_tensor: torch.Tensor,
         batch_indices: torch.Tensor,
         use_mean_latent: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        rank_negative_snv_tensor: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, ...]:
         latent_mean, latent_log_var = self.encode(expression_tensor)
+
+        # Rank pairs share one posterior mean while the main reconstruction stays stochastic.
+        if rank_negative_snv_tensor is not None:
+            positive_mean, positive_dispersion = self._decode_train_sparse(
+                latent_mean, snv_tensor, batch_indices
+            )
+            negative_mean, negative_dispersion = self._decode_train_sparse(
+                latent_mean, rank_negative_snv_tensor, batch_indices
+            )
+            positive_loss = self.compute_loss(
+                expression_tensor,
+                positive_mean,
+                positive_dispersion,
+                latent_mean,
+                latent_log_var,
+            )
+            negative_loss = self.compute_loss(
+                expression_tensor,
+                negative_mean,
+                negative_dispersion,
+                latent_mean,
+                latent_log_var,
+            )
+            return positive_loss.unsqueeze(0), negative_loss.unsqueeze(0)
+
         latent_sample = (
             latent_mean
             if use_mean_latent
@@ -599,11 +750,27 @@ def train_snv_perturbation_model(
     )
 
     is_rank0 = (not use_distributed) or rank == 0
+    target_model = model.module if isinstance(model, DistributedDataParallel) else model
+    encoder_modules = (
+        target_model.encoder,
+        target_model.encoder_mu,
+        target_model.encoder_log_var,
+    )
+    encoder_is_frozen = all(
+        not parameter.requires_grad
+        for encoder_module in encoder_modules
+        for parameter in encoder_module.parameters()
+    )
+    if encoder_is_frozen and is_rank0:
+        log("[INFO] Frozen RNA encoder will remain in eval mode during SNV training.")
 
     for epoch in range(1, num_epochs + 1):
         if use_distributed and sampler is not None:
             sampler.set_epoch(epoch)
         model.train()
+        if encoder_is_frozen:
+            for encoder_module in encoder_modules:
+                encoder_module.eval()
         total_loss = 0.0
         total_rank_loss = 0.0
         total_rank_valid = 0.0
@@ -646,17 +813,11 @@ def train_snv_perturbation_model(
                     snv_neg_rank = snv_batch[:1]
                     rank_weight = torch.zeros((), device=device)
 
-                pos_loss_rank, _mu_pos_rank, _z_pos_rank, _metrics_pos_rank = model(
+                pos_loss_rank, neg_loss_rank = model(
                     expression_rank,
                     snv_pos_rank,
                     batch_rank,
-                    use_mean_latent=True,
-                )
-                neg_loss_rank, _mu_neg_rank, _z_neg_rank, _metrics_neg_rank = model(
-                    expression_rank,
-                    snv_neg_rank,
-                    batch_rank,
-                    use_mean_latent=True,
+                    rank_negative_snv_tensor=snv_neg_rank,
                 )
 
                 rank_term = F.relu(
@@ -775,7 +936,7 @@ def main_run(
             + (backbone_ckpt if backbone_ckpt is not None else "None")
         )
         log(f"[INFO] Device: {device}")
-        log(f"[INFO] Top SNV number: {top_k_attention}")
+        log(f"[INFO] Latent-contribution Top SNV number: {top_k_attention}")
         log(f"[INFO] Number epochs: {num_epochs}")
         log("=" * 50)
 
@@ -949,8 +1110,8 @@ def main_run(
 
     top_snv_names = []
     if is_rank0:
-        log("[INFO] Compute mean attention per SNV")
-        top_attn_df = rank_snvs_by_attention(
+        log("[INFO] Compute mean latent flip contribution per SNV")
+        top_snv_df = rank_snvs_by_latent_contribution(
             model,
             X_tensor,
             G_tensor,
@@ -960,10 +1121,13 @@ def main_run(
             pair_chunk=pair_chunk,
             device=device,
         )
-        top_attn_path = os.path.join(result_folder, "top_snv_attention.csv")
-        top_attn_df.to_csv(top_attn_path, index=False)
-        log(f"[INFO] Saved top_snv_attention to {top_attn_path}")
-        top_snv_names = top_attn_df["SNV"].tolist()
+        screening_path = os.path.join(result_folder, "top_snv_attention.csv")
+        top_snv_df.to_csv(screening_path, index=False)
+        log(
+            "[INFO] Saved latent-contribution ranking to backward-compatible path "
+            f"{screening_path}"
+        )
+        top_snv_names = top_snv_df["SNV"].tolist()
 
     # all ranks
     if dist.is_available() and dist.is_initialized():
@@ -973,10 +1137,13 @@ def main_run(
 
     top_snv_indices = []
     if not top_snv_names:
-        log("[WARN] No SNVs passed the attention prefilter; skipping per-cell SNV scoring.")
+        log(
+            "[WARN] No SNVs passed the latent-contribution prefilter; "
+            "skipping per-cell SNV scoring."
+        )
     else:
         top_snv_indices = [adata_snv.var_names.get_loc(name) for name in top_snv_names]
-        log("[INFO] Scoring per-cell perturbation for top-attention SNVs.")
+        log("[INFO] Scoring per-cell perturbation for top latent-contribution SNVs.")
         per_cell_snv_scores = batch_score_snvs_by_cell(
             model,
             X_tensor,
@@ -1000,7 +1167,7 @@ def main_run(
         log("[INFO] Cell-type-free mode enabled: scoring SNVs using all carrier cells.")
 
         if not top_snv_names:
-            log("[WARN] No SNVs passed the attention prefilter; skipping scoring.")
+            log("[WARN] No SNVs passed the latent-contribution prefilter; skipping scoring.")
             if is_rank0:
                 _save_snv_name_array(
                     model_ckpt + ".final_snvs.npy",
@@ -1096,21 +1263,24 @@ def main_run(
         adata_snv,
         ann_df,
         celltype_key=celltype_key,
-        top_k_attention=top_k_attention,  # top_k_attention / cluster
+        top_k_attention=top_k_attention,  # Retained as a backward-compatible config key.
         attn_batch=score_attn_batch,
         device=device,
         cell_batch=score_cell_batch,
         pair_chunk=pair_chunk,
         batch_key=rna_batch_key,
+        rank_snvs_fn=rank_snvs_by_latent_contribution,
     )
     if is_rank0:
-        all_attn = pd.concat(
+        all_screening = pd.concat(
             [celltype_result[0] for celltype_result in by_ct.values()], axis=0
         )
         all_scores = pd.concat(
             [celltype_result[1] for celltype_result in by_ct.values()], axis=0
         )
-        attn_by_ct_path = os.path.join(result_folder, "top_snv_attention_by_celltype.csv")
+        screening_by_ct_path = os.path.join(
+            result_folder, "top_snv_attention_by_celltype.csv"
+        )
         scores_by_ct_path = os.path.join(
             result_folder, "snv_perturbation_scores_by_celltype.csv"
         )
@@ -1139,7 +1309,7 @@ def main_run(
             COSINE_DISTANCE_SCORE_COLUMN,
             output_column=f"{COSINE_DISTANCE_SCORE_COLUMN}_norm",
         )
-        all_attn.to_csv(attn_by_ct_path, index=False)
+        all_screening.to_csv(screening_by_ct_path, index=False)
         all_scores.to_csv(scores_by_ct_path, index=False)
         final_snv_names = list(dict.fromkeys(all_scores["SNV"].astype(str).tolist()))
         _save_snv_name_array(
@@ -1209,7 +1379,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         prog="prismsnv snv_effect",
         description=(
             "Train or evaluate the SNV perturbation model using aligned RNA and barcode-by-SNV AnnData inputs. "
-            "Exports SNV attention rankings, perturbation scores, and downstream plots for functional effect analysis."
+            "Exports latent-contribution SNV rankings, perturbation scores, and downstream plots for functional effect analysis."
         )
     )
     parser.add_argument(
