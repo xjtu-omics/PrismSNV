@@ -1047,7 +1047,7 @@ def mean_attention_per_snv(
     device: Optional[torch.device] = None,
 ) -> np.ndarray:
     """
-    Compute mean attention per SNV across cells.
+    Compute the mean independent sigmoid gate per SNV across cells.
     Memory Optimized: Moves data to GPU batch-by-batch to avoid OOM.
     """
     if device is None:
@@ -1099,18 +1099,8 @@ def mean_attention_per_snv(
             # Forward logits.
             logits[pair_start:pair_end] = model.attn_mlp(attn_inp).squeeze(-1)
 
-        # Stable per-cell softmax.
-        logits = torch.clamp(logits, max=50.0)
-        exp_logits = torch.exp(logits)
-
-        # Denominator.
-        current_batch_size = expression_batch.shape[0]
-        denominator = torch.zeros(current_batch_size, device=device)
-        denominator.index_add_(0, nonzero_pairs[:, 0], exp_logits)
-
-        # Weights.
-        gathered_denominator = denominator[nonzero_pairs[:, 0]] + 1e-12
-        attention_weights = exp_logits / gathered_denominator
+        # Each observed SNV is gated independently.
+        attention_weights = torch.sigmoid(logits)
         # Accumulate global stats.
         segment_snv_indices = nonzero_pairs[:, 1]  # Global SNV idx.
         sum_attention.index_add_(0, segment_snv_indices, attention_weights)

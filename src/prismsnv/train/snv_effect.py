@@ -116,6 +116,10 @@ RANK_MARGIN_MAX = 0.05
 RANK_WARMUP_EPOCHS = 10
 RANK_MIN_DIFF_SNV = 5
 RANK_START_EPOCH = 11
+DEFAULT_DECODER_LR = 1e-4
+DEFAULT_DECODER_L2_SP_LAMBDA = 1e-4
+DEFAULT_DELTA_RATIO_CAP = 0.8
+DEFAULT_DELTA_RATIO_LAMBDA = 100.0
 
 
 def _save_snv_name_array(path: str, snv_names: Iterable[str], label: str) -> None:
@@ -233,15 +237,7 @@ def mean_latent_contribution_per_snv(
                 dim=1,
             )
 
-        logits = torch.clamp(logits, max=50.0)
-        exp_logits = torch.exp(logits)
-
-        current_batch_size = expression_batch.shape[0]
-        denominator = torch.zeros(current_batch_size, device=device)
-        denominator.index_add_(0, nonzero_pairs[:, 0], exp_logits)
-
-        gathered_denominator = denominator[nonzero_pairs[:, 0]] + 1e-12
-        attention_weights = exp_logits / gathered_denominator
+        attention_weights = torch.sigmoid(logits)
         latent_contribution = 2.0 * attention_weights * projected_norms
 
         segment_snv_indices = nonzero_pairs[:, 1]
@@ -346,7 +342,7 @@ class SNVPerturbationModel(nn.Module):
         )
 
         # Project SNV-embedding contribution to latent space
-        self.snv_proj = nn.Linear(snv_emb_dim, latent_dim)
+        self.snv_proj = nn.Linear(snv_emb_dim, latent_dim, bias=False)
 
         # Decoder p(x|z)
         self.batch_emb = nn.Embedding(self.n_batches, self.batch_emb_dim)
@@ -383,8 +379,7 @@ class SNVPerturbationModel(nn.Module):
         Sparse training decoder:
         - Only compute attention and embeddings for SNVs with G != 0.
         - Avoid constructing a massive tensor of shape [B, S, latent].
-        - Use small per-cell loops for stable softmax (batch size is usually a few
-          hundred, so the overhead is minimal).
+        - Gate each observed SNV independently with a sigmoid weight.
         """
         batch_size, num_snvs = G.shape
         device = z.device
@@ -421,38 +416,14 @@ class SNVPerturbationModel(nn.Module):
         attn_inp = torch.cat([z_gather, e_cond], dim=1)     # [num_cell_snv_pairs, latent_dim+snv_emb_dim]
         logits = self.attn_mlp(attn_inp).squeeze(-1)        # [num_cell_snv_pairs]
 
-        # per-cell softmax
-        unique_cells, counts = torch.unique_consecutive(row_idx, return_counts=True)
-        offsets = torch.cat(
-            [torch.zeros(1, dtype=torch.long, device=device),
-             counts.cumsum(0)]
-        )
-
+        # Independent sigmoid gates do not compete within a cell.
+        attention_weights = torch.sigmoid(logits).unsqueeze(1)
+        weighted_contribution = (e_cond * signs) * attention_weights
         emb_dim = self.snv_emb_dim
         weighted_emb = torch.zeros(batch_size, emb_dim, device=device)
+        weighted_emb.index_add_(0, row_idx, weighted_contribution)
 
-        for cell_offset, cell_index in enumerate(unique_cells):
-            start = offsets[cell_offset].item()
-            end = offsets[cell_offset + 1].item()
-
-            # All (cell, SNV) pairs for the current cell
-            logits_seg = logits[start:end]          # [num_snvs_in_cell]
-            e_seg = e_cond[start:end]               # [num_snvs_in_cell, snv_emb_dim]
-            sign_seg = signs[start:end]             # [num_snvs_in_cell, 1]
-
-            # Numerically stable softmax: exp(l - max)
-            max_logit = logits_seg.max()
-            logits_shift = logits_seg - max_logit
-            exp_seg = torch.exp(logits_shift).unsqueeze(1)  # [num_snvs_in_cell, 1]
-            softmax_denominator = exp_seg.sum() + 1e-12
-            attention_weights = exp_seg / softmax_denominator  # [num_snvs_in_cell, 1]
-
-            # Attention weighting with sign
-            weighted_contribution = (e_seg * sign_seg) * attention_weights  # [num_snvs_in_cell, snv_emb_dim]
-
-            weighted_emb[cell_index] = weighted_contribution.sum(dim=0)  # [snv_emb_dim]
-
-        # project to latent space and decode
+        # A bias-free projection makes fully closed gates an exact no-op.
         delta_latent = self.snv_proj(weighted_emb)  # [batch_size, latent_dim]
         z_pert = z + delta_latent                   # [batch_size, latent_dim]
 
@@ -482,10 +453,7 @@ class SNVPerturbationModel(nn.Module):
 
         num_pairs = nonzero_pairs.shape[0]
 
-        # Running statistics per cell to avoid materializing tensors of size [P, ...].
-        cell_max_logit = torch.full((batch_size,), float("-inf"), device=device)
-        cell_sum_exp = torch.zeros(batch_size, device=device)
-        cell_weighted_sum = torch.zeros(batch_size, emb_dim, device=device)
+        weighted_embedding = torch.zeros(batch_size, emb_dim, device=device)
 
         for start_pair, end_pair in chunk_iter(num_pairs, pair_chunk):
             pair_slice = nonzero_pairs[start_pair:end_pair]
@@ -502,50 +470,14 @@ class SNVPerturbationModel(nn.Module):
             signs = torch.sign(G[cell_idx_slice, snv_idx_slice]).float().unsqueeze(1)  # [pair_slice.shape[0], 1]
             signed_cond_emb = cond_emb * signs  # [pair_slice.shape[0], emb]
 
-            if logits_slice.numel() == 0:
-                continue
-
-            unique_cells_local, counts_per_cell = torch.unique_consecutive(
-                cell_idx_slice, return_counts=True
-            )
-            offsets = torch.cat(
-                [
-                    torch.zeros(1, device=device, dtype=torch.long),
-                    counts_per_cell.cumsum(0),
-                ]
+            attention_weights = torch.sigmoid(logits_slice).unsqueeze(1)
+            weighted_embedding.index_add_(
+                0,
+                cell_idx_slice,
+                signed_cond_emb * attention_weights,
             )
 
-            for uidx in range(unique_cells_local.shape[0]):
-                seg_start = offsets[uidx].item()
-                seg_end = offsets[uidx + 1].item()
-
-                cell_id = unique_cells_local[uidx]
-                cell_seg_logits = logits_slice[seg_start:seg_end]
-                cell_seg_signed_emb = signed_cond_emb[seg_start:seg_end]
-
-                seg_max_logit = cell_seg_logits.max()
-                prev_max_logit = cell_max_logit[cell_id]
-                updated_max_logit = torch.maximum(prev_max_logit, seg_max_logit)
-
-                prev_scale = torch.exp(prev_max_logit - updated_max_logit)
-                exp_segment = torch.exp(cell_seg_logits - updated_max_logit).unsqueeze(1)
-
-                cell_weighted_sum[cell_id] = (
-                    cell_weighted_sum[cell_id] * prev_scale
-                    + (exp_segment * cell_seg_signed_emb).sum(dim=0)
-                )
-                cell_sum_exp[cell_id] = (
-                    cell_sum_exp[cell_id] * prev_scale + exp_segment.sum()
-                )
-                cell_max_logit[cell_id] = updated_max_logit
-
-        weighted_embedding = torch.zeros(batch_size, emb_dim, device=device)
-        has_contributions = cell_sum_exp > 0
-        if has_contributions.any():
-            weighted_embedding[has_contributions] = (
-                cell_weighted_sum[has_contributions] / cell_sum_exp[has_contributions].unsqueeze(1)
-            )
-
+        # A bias-free projection makes fully closed gates an exact no-op.
         delta_latent = self.snv_proj(weighted_embedding)  # [batch_size, latent]
         z_pert = z + delta_latent
         decoder_inp = torch.cat([z_pert, batch_embedding], dim=1)
@@ -561,6 +493,8 @@ class SNVPerturbationModel(nn.Module):
         batch_indices: torch.Tensor,
         use_mean_latent: bool = False,
         rank_negative_snv_tensor: Optional[torch.Tensor] = None,
+        delta_ratio_cap: Optional[float] = DEFAULT_DELTA_RATIO_CAP,
+        delta_ratio_lambda: float = DEFAULT_DELTA_RATIO_LAMBDA,
     ) -> Tuple[torch.Tensor, ...]:
         latent_mean, latent_log_var = self.encode(expression_tensor)
 
@@ -607,8 +541,24 @@ class SNVPerturbationModel(nn.Module):
         delta_norm = torch.norm(delta_latent, p=2, dim=1)
         z_norm = torch.norm(latent_sample, p=2, dim=1)
         delta_ratio = delta_norm / (z_norm + 1e-8)
+        delta_ratio_penalty = torch.zeros((), device=delta_latent.device)
+        delta_ratio_over_cap = torch.zeros((), device=delta_latent.device)
+        if delta_ratio_cap is not None:
+            penalty_ratio = delta_norm / (z_norm.detach() + 1e-8)
+            excess_ratio = F.relu(penalty_ratio - delta_ratio_cap)
+            delta_ratio_over_cap = (penalty_ratio > delta_ratio_cap).float().mean()
+            if delta_ratio_lambda > 0.0:
+                delta_ratio_penalty = delta_ratio_lambda * excess_ratio.pow(2).mean()
+                loss = loss + delta_ratio_penalty
         monitor_metrics = torch.stack(
-            [delta_norm.mean(), z_norm.mean(), delta_ratio.mean()], dim=0
+            [
+                delta_norm.mean(),
+                z_norm.mean(),
+                delta_ratio.mean(),
+                delta_ratio_penalty,
+                delta_ratio_over_cap,
+            ],
+            dim=0,
         )
         return loss.unsqueeze(0), reconstruction_mean, latent_mean, monitor_metrics
 
@@ -725,6 +675,10 @@ def train_snv_perturbation_model(
     use_distributed: bool = False,
     rank_lambda_max: float = RANK_LAMBDA_MAX,
     rank_margin_max: float = RANK_MARGIN_MAX,
+    decoder_lr: float = DEFAULT_DECODER_LR,
+    decoder_l2_sp_lambda: float = DEFAULT_DECODER_L2_SP_LAMBDA,
+    delta_ratio_cap: float = DEFAULT_DELTA_RATIO_CAP,
+    delta_ratio_lambda: float = DEFAULT_DELTA_RATIO_LAMBDA,
 ):
     if device is None:
         device = get_device()
@@ -735,8 +689,66 @@ def train_snv_perturbation_model(
     rank_start_epoch = RANK_START_EPOCH
 
     model = model.to(device)
-    params = trainable_params if trainable_params is not None else model.parameters()
-    opt = torch.optim.Adam(params, lr=lr, weight_decay=weight_decay)
+    target_model = model.module if isinstance(model, DistributedDataParallel) else model
+    selected_parameters = list(
+        trainable_params if trainable_params is not None else model.parameters()
+    )
+    selected_parameters = [parameter for parameter in selected_parameters if parameter.requires_grad]
+    decoder_parameter_ids = {id(parameter) for parameter in target_model.decoder.parameters()}
+    decoder_parameters = [
+        parameter for parameter in selected_parameters if id(parameter) in decoder_parameter_ids
+    ]
+    other_parameters = [
+        parameter for parameter in selected_parameters if id(parameter) not in decoder_parameter_ids
+    ]
+    optimizer_groups = []
+    if other_parameters:
+        optimizer_groups.append({"params": other_parameters, "lr": lr})
+    if decoder_parameters:
+        optimizer_groups.append({"params": decoder_parameters, "lr": decoder_lr})
+    opt = torch.optim.Adam(optimizer_groups, lr=lr, weight_decay=weight_decay)
+
+    copied_keys = set(getattr(target_model, "_backbone_copied_keys", ()))
+    trainable_decoder_tensor_count = sum(
+        1 for parameter in target_model.decoder.parameters() if parameter.requires_grad
+    )
+    decoder_l2_sp_pairs = [
+        (parameter, parameter.detach().clone())
+        for name, parameter in target_model.named_parameters()
+        if (
+            parameter.requires_grad
+            and name.startswith("decoder.")
+            and name in copied_keys
+        )
+    ]
+    if decoder_l2_sp_lambda > 0.0 and not decoder_l2_sp_pairs:
+        log(
+            "[WARN] Decoder L2-SP requested, but no trainable decoder parameters "
+            "were copied from the pretrained backbone; L2-SP is disabled."
+        )
+    elif (
+        decoder_l2_sp_lambda > 0.0
+        and len(decoder_l2_sp_pairs) < trainable_decoder_tensor_count
+    ):
+        log(
+            "[WARN] Decoder L2-SP anchors only %d/%d trainable decoder tensors; "
+            "uncopied tensors use the lower decoder learning rate without anchoring.",
+            len(decoder_l2_sp_pairs),
+            trainable_decoder_tensor_count,
+        )
+    is_rank0 = (not use_distributed) or rank == 0
+    if is_rank0:
+        log(
+            "[INFO] Optimizer learning rates: non-decoder=%.6g, decoder=%.6g; "
+            "decoder L2-SP lambda=%.6g (%d anchored tensors); "
+            "delta-ratio cap=%.6g, lambda=%.6g.",
+            lr,
+            decoder_lr,
+            decoder_l2_sp_lambda,
+            len(decoder_l2_sp_pairs),
+            delta_ratio_cap,
+            delta_ratio_lambda,
+        )
     # sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
     #     opt, mode='min', factor=0.5, patience=10, min_lr=1e-6, verbose=True
     # )
@@ -749,8 +761,6 @@ def train_snv_perturbation_model(
         eta_min=1e-8,
     )
 
-    is_rank0 = (not use_distributed) or rank == 0
-    target_model = model.module if isinstance(model, DistributedDataParallel) else model
     encoder_modules = (
         target_model.encoder,
         target_model.encoder_mu,
@@ -773,17 +783,24 @@ def train_snv_perturbation_model(
                 encoder_module.eval()
         total_loss = 0.0
         total_rank_loss = 0.0
+        total_decoder_l2_sp = 0.0
         total_rank_valid = 0.0
         total_delta_norm = 0.0
         total_z_norm = 0.0
         total_delta_ratio = 0.0
+        total_delta_ratio_penalty = 0.0
+        total_delta_ratio_over_cap = 0.0
         n_train_samples = 0
         for expression_batch, snv_batch, batch_indices in dataloader:
             expression_batch = expression_batch.to(device).float()
             snv_batch = snv_batch.to(device).float()
             batch_indices = batch_indices.to(device).long()
             loss, _reconstruction_mean, _latent_mean, monitor_metrics = model(
-                expression_batch, snv_batch, batch_indices
+                expression_batch,
+                snv_batch,
+                batch_indices,
+                delta_ratio_cap=delta_ratio_cap,
+                delta_ratio_lambda=delta_ratio_lambda,
             )
             rank_loss_scaled = torch.zeros((), device=device)
             rank_valid_count = torch.zeros((), device=device)
@@ -826,6 +843,19 @@ def train_snv_perturbation_model(
                 rank_loss_scaled = rank_weight * (rank_lambda * rank_term)
                 loss = loss + rank_loss_scaled.reshape(1)
 
+            decoder_l2_sp_scaled = torch.zeros((), device=device)
+            if decoder_l2_sp_lambda > 0.0 and decoder_l2_sp_pairs:
+                decoder_l2_sp_penalty = torch.stack(
+                    [
+                        (parameter - reference).pow(2).sum()
+                        for parameter, reference in decoder_l2_sp_pairs
+                    ]
+                ).sum()
+                decoder_l2_sp_scaled = (
+                    0.5 * decoder_l2_sp_lambda * decoder_l2_sp_penalty
+                )
+                loss = loss + decoder_l2_sp_scaled.reshape(1)
+
             opt.zero_grad(set_to_none=True)
             loss.backward()
             if clip_grad is not None:
@@ -851,12 +881,19 @@ def train_snv_perturbation_model(
             total_rank_loss += float(rank_loss_sum.item())
             total_rank_valid += float(rank_valid_count.item())
 
+            decoder_l2_sp_sum = decoder_l2_sp_scaled.detach() * expression_batch.size(0)
+            if use_distributed:
+                dist.all_reduce(decoder_l2_sp_sum, op=dist.ReduceOp.SUM)
+            total_decoder_l2_sp += float(decoder_l2_sp_sum.item())
+
             metrics_sum = monitor_metrics.detach() * expression_batch.size(0)
             if use_distributed:
                 dist.all_reduce(metrics_sum, op=dist.ReduceOp.SUM)
             total_delta_norm += float(metrics_sum[0].item())
             total_z_norm += float(metrics_sum[1].item())
             total_delta_ratio += float(metrics_sum[2].item())
+            total_delta_ratio_penalty += float(metrics_sum[3].item())
+            total_delta_ratio_over_cap += float(metrics_sum[4].item())
 
             n_train_samples += expression_batch.size(0) * (
                 world_size if use_distributed else 1
@@ -864,16 +901,26 @@ def train_snv_perturbation_model(
 
         average_loss = total_loss / max(1, n_train_samples)
         average_rank_loss = total_rank_loss / max(1, n_train_samples)
+        average_decoder_l2_sp = total_decoder_l2_sp / max(1, n_train_samples)
         average_rank_valid_ratio = total_rank_valid / max(1, n_train_samples)
         average_delta_norm = total_delta_norm / max(1, n_train_samples)
         average_z_norm = total_z_norm / max(1, n_train_samples)
         average_delta_ratio = total_delta_ratio / max(1, n_train_samples)
+        average_delta_ratio_penalty = (
+            total_delta_ratio_penalty / max(1, n_train_samples)
+        )
+        average_delta_ratio_over_cap = (
+            total_delta_ratio_over_cap / max(1, n_train_samples)
+        )
         if is_rank0:
             log(
-                "Epoch %03d | Loss: %.4f | Rank: %.6f | RankValid: %.4f | ||ΔZ||: %.6f | ||Z||: %.6f | ΔZ/Z: %.6f",
+                "Epoch %03d | Loss: %.4f | Rank: %.6f | DecoderL2SP: %.6f | DeltaRatioPenalty: %.6f | OverCap: %.4f | RankValid: %.4f | ||ΔZ||: %.6f | ||Z||: %.6f | ΔZ/Z: %.6f",
                 epoch,
                 average_loss,
                 average_rank_loss,
+                average_decoder_l2_sp,
+                average_delta_ratio_penalty,
+                average_delta_ratio_over_cap,
                 average_rank_valid_ratio,
                 average_delta_norm,
                 average_z_norm,
@@ -913,6 +960,10 @@ def main_run(
     cluster_resolution: float = RESOLUTION,
     rank_lambda_max: float = RANK_LAMBDA_MAX,
     rank_margin_max: float = RANK_MARGIN_MAX,
+    decoder_lr: float = DEFAULT_DECODER_LR,
+    decoder_l2_sp_lambda: float = DEFAULT_DECODER_L2_SP_LAMBDA,
+    delta_ratio_cap: float = DEFAULT_DELTA_RATIO_CAP,
+    delta_ratio_lambda: float = DEFAULT_DELTA_RATIO_LAMBDA,
 ):
     os.makedirs(result_folder, exist_ok=True)
     if backbone_ckpt is None:
@@ -938,6 +989,11 @@ def main_run(
         log(f"[INFO] Device: {device}")
         log(f"[INFO] Latent-contribution Top SNV number: {top_k_attention}")
         log(f"[INFO] Number epochs: {num_epochs}")
+        log("[INFO] SNV gating: independent sigmoid; bias-free projection")
+        log(f"[INFO] Decoder learning rate: {decoder_lr}")
+        log(f"[INFO] Decoder L2-SP lambda: {decoder_l2_sp_lambda}")
+        log(f"[INFO] Delta-ratio soft cap: {delta_ratio_cap}")
+        log(f"[INFO] Delta-ratio penalty lambda: {delta_ratio_lambda}")
         log("=" * 50)
 
     if model_ckpt is None:
@@ -1076,6 +1132,10 @@ def main_run(
             use_distributed=use_distributed,
             rank_lambda_max=rank_lambda_max,
             rank_margin_max=rank_margin_max,
+            decoder_lr=decoder_lr,
+            decoder_l2_sp_lambda=decoder_l2_sp_lambda,
+            delta_ratio_cap=delta_ratio_cap,
+            delta_ratio_lambda=delta_ratio_lambda,
         )
 
         if dist.is_initialized():
@@ -1433,15 +1493,39 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     seed = yaml_config.get("seed", 42)
     rank_lambda_max = yaml_config.get("rank_lambda_max", RANK_LAMBDA_MAX)
     rank_margin_max = yaml_config.get("rank_margin_max", RANK_MARGIN_MAX)
+    decoder_lr = yaml_config.get("decoder_lr", DEFAULT_DECODER_LR)
+    decoder_l2_sp_lambda = yaml_config.get(
+        "decoder_l2_sp_lambda", DEFAULT_DECODER_L2_SP_LAMBDA
+    )
+    delta_ratio_cap = yaml_config.get("delta_ratio_cap", DEFAULT_DELTA_RATIO_CAP)
+    delta_ratio_lambda = yaml_config.get(
+        "delta_ratio_lambda", DEFAULT_DELTA_RATIO_LAMBDA
+    )
     celltype_key = yaml_config.get("celltype_key", "cell_cluster")
     cluster_resolution = yaml_config.get("cluster_resolution", RESOLUTION)
     try:
         rank_lambda_max = float(rank_lambda_max)
         rank_margin_max = float(rank_margin_max)
+        decoder_lr = float(decoder_lr)
+        decoder_l2_sp_lambda = float(decoder_l2_sp_lambda)
+        delta_ratio_cap = float(delta_ratio_cap)
+        delta_ratio_lambda = float(delta_ratio_lambda)
     except (TypeError, ValueError):
-        parser.error("rank_lambda_max and rank_margin_max must be numeric values greater than or equal to 0.")
+        parser.error(
+            "rank_lambda_max, rank_margin_max, decoder_lr, "
+            "decoder_l2_sp_lambda, delta_ratio_cap, and delta_ratio_lambda "
+            "must be numeric values."
+        )
     if rank_lambda_max < 0.0 or rank_margin_max < 0.0:
         parser.error("rank_lambda_max and rank_margin_max must be greater than or equal to 0.")
+    if decoder_lr <= 0.0:
+        parser.error("decoder_lr must be greater than 0.")
+    if decoder_l2_sp_lambda < 0.0:
+        parser.error("decoder_l2_sp_lambda must be greater than or equal to 0.")
+    if delta_ratio_cap <= 0.0:
+        parser.error("delta_ratio_cap must be greater than 0.")
+    if delta_ratio_lambda < 0.0:
+        parser.error("delta_ratio_lambda must be greater than or equal to 0.")
     try:
         cluster_resolution = float(cluster_resolution)
     except (TypeError, ValueError):
@@ -1588,6 +1672,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         snv_batch_key=snv_batch_key,
         rank_lambda_max=rank_lambda_max,
         rank_margin_max=rank_margin_max,
+        decoder_lr=decoder_lr,
+        decoder_l2_sp_lambda=decoder_l2_sp_lambda,
+        delta_ratio_cap=delta_ratio_cap,
+        delta_ratio_lambda=delta_ratio_lambda,
     )
     log("[INFO] Finished all workflow!")
 

@@ -81,6 +81,14 @@ snv_eff:
   rank_lambda_max: 0.05
   # Maximum margin enforced between true-pair loss and shuffled-negative loss in the rank-loss term.
   rank_margin_max: 0.05
+  # Decoder learning rate; SNV-specific modules retain the main 1e-3 learning rate.
+  decoder_lr: 0.0001
+  # L2-SP weight anchoring copied decoder parameters to their pretrained values.
+  decoder_l2_sp_lambda: 0.001
+  # Per-cell upper bound for ||delta_z|| / ||z|| before the soft penalty applies.
+  delta_ratio_cap: 0.8
+  # Weight of the squared soft penalty above delta_ratio_cap; set to 0 to disable.
+  delta_ratio_lambda: 100.0
   # Pretrained backbone checkpoint and gene list are loaded from result_folder.
   # Freeze RNA backbone parameters during SNV training.
   freeze_backbone: true
