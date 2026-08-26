@@ -555,6 +555,7 @@ def safe_load_backbone_into_snv_model(
     ckpt_sd = torch.load(backbone_ckpt, map_location=map_location)
     tgt_sd = snv_model.state_dict()
     copied = 0
+    copied_keys = []
     skipped = []
 
     for k, v in ckpt_sd.items():
@@ -566,10 +567,12 @@ def safe_load_backbone_into_snv_model(
         if k in tgt_sd and tgt_sd[k].shape == v.shape:
             tgt_sd[k] = v.clone()
             copied += 1
+            copied_keys.append(k)
         else:
             skipped.append((k, "shape_mismatch_or_not_found"))
 
     snv_model.load_state_dict(tgt_sd, strict=False)
+    snv_model._backbone_copied_keys = tuple(copied_keys)
     log(f"[Transfer] Copied {copied} tensors; skipped {len(skipped)} (batch_emb/shape-mismatch).")
     for name, reason in skipped:
         log(f"[Transfer] Skipped {name} ({reason}).")
