@@ -56,6 +56,7 @@ test:
     - prismsnv snv2barcode --help
     - prismsnv pre_train --help
     - prismsnv snv_effect --help
+    - prismsnv get_template --help
 
 about:
   home: https://github.com/xjtu-omics/PrismSNV
