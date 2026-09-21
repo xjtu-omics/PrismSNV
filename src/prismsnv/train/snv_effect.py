@@ -785,11 +785,7 @@ def train_snv_perturbation_model(
         total_rank_loss = 0.0
         total_decoder_l2_sp = 0.0
         total_rank_valid = 0.0
-        total_delta_norm = 0.0
-        total_z_norm = 0.0
-        total_delta_ratio = 0.0
-        total_delta_ratio_penalty = 0.0
-        total_delta_ratio_over_cap = 0.0
+        monitor_totals = torch.zeros(5, device=device, dtype=torch.float64)
         n_train_samples = 0
         for expression_batch, snv_batch, batch_indices in dataloader:
             expression_batch = expression_batch.to(device).float()
@@ -889,11 +885,7 @@ def train_snv_perturbation_model(
             metrics_sum = monitor_metrics.detach() * expression_batch.size(0)
             if use_distributed:
                 dist.all_reduce(metrics_sum, op=dist.ReduceOp.SUM)
-            total_delta_norm += float(metrics_sum[0].item())
-            total_z_norm += float(metrics_sum[1].item())
-            total_delta_ratio += float(metrics_sum[2].item())
-            total_delta_ratio_penalty += float(metrics_sum[3].item())
-            total_delta_ratio_over_cap += float(metrics_sum[4].item())
+            monitor_totals.add_(metrics_sum)
 
             n_train_samples += expression_batch.size(0) * (
                 world_size if use_distributed else 1
@@ -903,6 +895,13 @@ def train_snv_perturbation_model(
         average_rank_loss = total_rank_loss / max(1, n_train_samples)
         average_decoder_l2_sp = total_decoder_l2_sp / max(1, n_train_samples)
         average_rank_valid_ratio = total_rank_valid / max(1, n_train_samples)
+        (
+            total_delta_norm,
+            total_z_norm,
+            total_delta_ratio,
+            total_delta_ratio_penalty,
+            total_delta_ratio_over_cap,
+        ) = monitor_totals.tolist()
         average_delta_norm = total_delta_norm / max(1, n_train_samples)
         average_z_norm = total_z_norm / max(1, n_train_samples)
         average_delta_ratio = total_delta_ratio / max(1, n_train_samples)
