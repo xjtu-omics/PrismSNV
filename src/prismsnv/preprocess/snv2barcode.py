@@ -3,6 +3,7 @@ import math
 import os
 import re
 import sys
+import time
 
 import anndata as ad
 import matplotlib
@@ -13,9 +14,14 @@ import pysam
 import yaml
 
 from multiprocessing import Pool, cpu_count, Process, Queue
+from multiprocessing.util import Finalize
+from queue import Empty, Queue as ThreadQueue
 from scipy.sparse import csr_matrix, lil_matrix, hstack
 from collections import defaultdict
+from contextlib import ExitStack
 from datetime import datetime
+from statistics import median
+from typing import NamedTuple
 from tqdm import tqdm
 
 matplotlib.use("Agg")
@@ -29,6 +35,13 @@ SAMPLE_FILE_LABELS = {
     "cb": "CB",
     "annotated_vcf": "annotated_vcf",
 }
+PILEUP_MAX_DEPTH = 8000
+PILEUP_WINDOW_BP = 10000
+PILEUP_WINDOW_GAP = 1000
+PILEUP_WINDOW_MAX_SNVS = 64
+PILEUP_LOAD_BALANCE = True
+_SNV_WORKER_BAM = None
+_SNV_WORKER_CONFIG = None
 
 
 def read_snv_positions(snv_file):
@@ -708,103 +721,266 @@ def _extract_neg1_probabilities_from_adata(adata_obj):
     return values
 
 
-def process_snv_chunk(args):
-    """
-    For a chunk of SNV list, use pileup from BAM to find:
-      - CBs supporting alt alleles (mut)
-      - CBs supporting ref alleles (no_var)
-    """
-    bam_path, snv_chunk, count_unit, base_quality_min, mapping_quality_min = args
-    logger.debug(
-        "Worker processing %d SNVs from BAM file %s", len(snv_chunk), bam_path
-    )
-    bamfile = pysam.AlignmentFile(bam_path, "rb")
+class _SnvTask(NamedTuple):
+    task_id: int
+    chrom: str
+    start: int
+    stop: int
+    snvs: tuple[tuple[str, int, str, str], ...]
+    load: float
 
-    chunk_results = []
-    chunk_no_snv_results = []
-    chunk_alt_count_results = []
-    chunk_ref_count_results = []
 
-    for snv in snv_chunk:
-        # Support both VCF format (>=5 columns) and TSV format (4 columns)
+def _parse_snv_records(snv_positions):
+    records = []
+    for snv in snv_positions:
+        # Preserve the existing VCF/TSV interpretation and allele spelling.
         if len(snv) >= 5:
-            chrom, pos, ref, alt = snv[0], int(snv[1]), snv[3], snv[4]
+            records.append((snv[0], int(snv[1]), snv[3], snv[4]))
         elif len(snv) >= 4:
-            chrom, pos, ref, alt = snv[0], int(snv[1]), snv[2], snv[3]
+            records.append((snv[0], int(snv[1]), snv[2], snv[3]))
         else:
             logger.warning("Skipping malformed SNV record: %s", snv)
+    return records
+
+
+def _plan_snv_tasks(bamfile, snv_positions, window_bp, window_gap, window_max_snvs, load_balance):
+    """Build bounded tasks in BAM reference order without changing the input union."""
+    reference_order = {chrom: i for i, chrom in enumerate(bamfile.references)}
+    reference_lengths = dict(zip(bamfile.references, bamfile.lengths))
+    records = _parse_snv_records(snv_positions)
+    for chrom, pos, _, _ in records:
+        if chrom not in reference_order:
+            raise ValueError(f"SNV contig {chrom!r} is absent from the BAM header.")
+        if pos < 1 or pos > reference_lengths[chrom]:
+            raise ValueError(f"SNV position is outside the BAM reference: {chrom}:{pos}.")
+    records.sort(key=lambda snv: (reference_order[snv[0]], snv[1]))
+
+    loads = {chrom: 1.0 for chrom, _, _, _ in records}
+    if load_balance and loads:
+        try:
+            densities = {
+                stat.contig: stat.mapped / max(1, reference_lengths[stat.contig])
+                for stat in bamfile.get_index_statistics()
+                if stat.contig in loads
+            }
+        except (ValueError, NotImplementedError) as exc:
+            logger.warning("BAM index statistics unavailable; using uniform task limits: %s", exc)
+            densities = {}
+        positive_densities = [value for value in densities.values() if value > 0]
+        if positive_densities:
+            baseline = median(positive_densities)
+            loads = {chrom: max(1.0, densities.get(chrom, 0.0) / baseline) for chrom in loads}
+            logger.info(
+                "Contig load proxies (mapped records/bp relative to median; not read depth): %s",
+                ", ".join(
+                    f"{chrom}={load:.1f}x"
+                    for chrom, load in sorted(loads.items(), key=lambda item: -item[1])[:8]
+                ),
+            )
+
+    tasks = []
+    window = []
+
+    def append_window():
+        chrom = window[0][0]
+        tasks.append(
+            _SnvTask(len(tasks), chrom, window[0][1] - 1, window[-1][1], tuple(window), loads[chrom])
+        )
+
+    for record in records:
+        chrom, pos, _, _ = record
+        divisor = math.ceil(loads[chrom])
+        span_limit = max(1, window_bp // divisor)
+        snv_limit = max(1, window_max_snvs // divisor)
+        if window and (
+            chrom != window[0][0]
+            or pos - window[0][1] + 1 > span_limit
+            or pos - window[-1][1] > window_gap
+            or len(window) >= snv_limit
+        ):
+            append_window()
+            window = []
+        window.append(record)
+    if window:
+        append_window()
+    return tasks
+
+
+def _count_pileup_bases(
+    pileup, snv, bam_path, count_unit, base_quality_min, mapping_quality_min, wanted_bases
+):
+    """Count each target column once, keeping per-base CB/UB evidence separate."""
+    chrom, pos, ref, alt = snv
+    read_counts = defaultdict(lambda: defaultdict(int))
+    umi_sets = defaultdict(lambda: defaultdict(set))
+    if pileup.n > 50000:
+        logger.info("WARNING: Skipping high-depth site %s:%d with depth %d", chrom, pos, pileup.n)
+        return {}
+    for pileup_read in pileup.pileups:
+        alignment = pileup_read.alignment
+        if alignment and pileup_read.query_position is not None:
+            query_position = int(pileup_read.query_position)
+            read_base = alignment.query_sequence[query_position]
+            query_qualities = alignment.query_qualities
+            if query_qualities is None:
+                raise ValueError(
+                    "BAM read is missing base quality values, so "
+                    "base-quality filtering cannot be applied. "
+                    f"bam={bam_path}, snv={chrom}:{pos} {ref}>{alt}, "
+                    f"read={alignment.query_name}. "
+                    "Please provide a BAM with QUAL values or disable/remove "
+                    "base-quality filtering explicitly before running this step."
+                )
+            if (
+                query_qualities[query_position] < base_quality_min
+                or alignment.mapping_quality < mapping_quality_min
+            ):
+                continue
+            if read_base in wanted_bases and alignment.has_tag("CB"):
+                barcode = alignment.get_tag("CB")
+                read_counts[read_base][barcode] += 1
+                if alignment.has_tag("UB"):
+                    umi = alignment.get_tag("UB")
+                    if umi is not None:
+                        umi_sets[read_base][barcode].add(umi)
+    return {
+        base: _collapse_counts_by_unit(counts, umi_sets[base], count_unit)
+        for base, counts in read_counts.items()
+    }
+
+
+def _count_window_reads_to_limit(bamfile, chrom: str, start: int, stop: int) -> int:
+    """Count raw overlapping alignments, stopping at the pileup admission limit."""
+    observed = 0
+    reads = bamfile.fetch(chrom, start, stop, multiple_iterators=False)
+    try:
+        for _ in reads:
+            observed += 1
+            if observed >= PILEUP_MAX_DEPTH:
+                break
+    finally:
+        # Release the iterator before another query uses the process-local BAM.
+        del reads
+    return observed
+
+
+def _iter_depth_safe_intervals(bamfile, chrom, target_positions, stats):
+    """Subdivide windows until depth admission cannot couple target coordinates."""
+    pending = [(0, len(target_positions))] if target_positions else []
+    while pending:
+        first, last = pending.pop()
+        start, stop = target_positions[first], target_positions[last - 1] + 1
+        if last - first == 1:
+            # A one-coordinate window has the original query's depth semantics.
+            stats["single_position_queries"] += 1
+            yield start, stop
             continue
 
-        alt_read_counts = defaultdict(int)
-        ref_read_counts = defaultdict(int)
-        alt_umi_sets = defaultdict(set)
-        ref_umi_sets = defaultdict(set)
+        observed = _count_window_reads_to_limit(bamfile, chrom, start, stop)
+        stats["depth_guard_checks"] += 1
+        stats["depth_guard_reads"] += observed
+        if observed < PILEUP_MAX_DEPTH:
+            # Raw read count bounds all reads the engine could admit, including
+            # reads starting before the window and reads without CB/QUAL support.
+            yield start, stop
+            continue
 
-        pileup_column = bamfile.pileup(chrom, pos - 1, pos)
-        for pileup in pileup_column:
-            if pileup.pos == pos - 1:
-                if pileup.n > 50000:
-                    logger.info(
-                        f"WARNING: Skipping high-depth site {chrom}:{pos} with depth {pileup.n}"
-                    )
+        # A target column below max_depth does not exclude upstream truncation.
+        # Split by unique coordinates so alternate alleles stay in one query.
+        stats["depth_guard_splits"] += 1
+        middle = (first + last) // 2
+        pending.append((middle, last))
+        pending.append((first, middle))
+
+
+def _extract_snv_support(
+    bamfile, bam_path, records, count_unit, base_quality_min, mapping_quality_min
+):
+    """Extract a task using automatically subdivided, single-contig windows."""
+    prefixes = [f"{chrom}\t{pos}\t{ref}\t{alt}\t" for chrom, pos, ref, alt in records]
+    results = tuple(list(prefixes) for _ in range(4))
+    stats = {
+        "pileup_calls": 0, "target_columns": 0,
+        "max_target_depth": 0, "depth_limit_columns": 0,
+        "depth_guard_checks": 0, "depth_guard_reads": 0,
+        "depth_guard_splits": 0, "single_position_queries": 0,
+    }
+    if not records:
+        return results, stats
+    target_indices = defaultdict(list)
+    for i, (_, pos, _, _) in enumerate(records):
+        target_indices[pos - 1].append(i)
+    chrom = records[0][0]
+    target_positions = sorted(target_indices)
+    # Keep all existing engine filters, including its implicit baseQ floor.
+    # Moving Python quality filters into pileup can change depth admission.
+    # Windows are consumed sequentially on a process-local handle. Disable
+    # independent iterators so pysam does not reopen the BAM and its index.
+    for start, stop in _iter_depth_safe_intervals(bamfile, chrom, target_positions, stats):
+        columns = bamfile.pileup(
+            chrom, start, stop, truncate=True, max_depth=PILEUP_MAX_DEPTH,
+            multiple_iterators=False,
+        )
+        stats["pileup_calls"] += 1
+        try:
+            for column in columns:
+                indices = target_indices.get(column.pos)
+                if indices is None:
                     continue
-                for pileup_read in pileup.pileups:
-                    if pileup_read.alignment and pileup_read.query_position is not None:
-                        query_position = int(pileup_read.query_position)
-                        read_base = pileup_read.alignment.query_sequence[query_position]
-                        query_qualities = pileup_read.alignment.query_qualities
-                        if query_qualities is None:
-                            raise ValueError(
-                                "BAM read is missing base quality values, so "
-                                "base-quality filtering cannot be applied. "
-                                f"bam={bam_path}, snv={chrom}:{pos} {ref}>{alt}, "
-                                f"read={pileup_read.alignment.query_name}. "
-                                "Please provide a BAM with QUAL values or disable/remove "
-                                "base-quality filtering explicitly before running this step."
-                            )
-                        read_quality = query_qualities[query_position]
-                        if (
-                            read_quality < int(base_quality_min)
-                            or pileup_read.alignment.mapping_quality < int(mapping_quality_min)
-                        ):
-                            continue
+                stats["target_columns"] += 1
+                stats["max_target_depth"] = max(stats["max_target_depth"], column.n)
+                stats["depth_limit_columns"] += int(column.n >= PILEUP_MAX_DEPTH)
+                wanted_bases = {base for i in indices for base in records[i][2:]}
+                counts = _count_pileup_bases(
+                    column, records[indices[0]], bam_path, count_unit,
+                    base_quality_min, mapping_quality_min, wanted_bases,
+                )
+                for i in indices:
+                    _, _, ref, alt = records[i]
+                    alt_counts = counts.get(alt, {})
+                    # Preserve the original if-alt/elif-ref behavior, even for REF == ALT.
+                    ref_counts = counts.get(ref, {}) if ref != alt else {}
+                    results[0][i] = prefixes[i] + ",".join(sorted(alt_counts))
+                    results[1][i] = prefixes[i] + ",".join(sorted(ref_counts))
+                    results[2][i] = prefixes[i] + _format_barcode_counts(alt_counts)
+                    results[3][i] = prefixes[i] + _format_barcode_counts(ref_counts)
+        finally:
+            del columns
+    return results, stats
 
-                        if pileup_read.alignment.has_tag("CB"):
-                            cb_tag = pileup_read.alignment.get_tag("CB")
-                            ub_tag = None
-                            if pileup_read.alignment.has_tag("UB"):
-                                ub_tag = pileup_read.alignment.get_tag("UB")
-                            if read_base == alt:
-                                alt_read_counts[cb_tag] += 1
-                                if ub_tag is not None:
-                                    alt_umi_sets[cb_tag].add(ub_tag)
-                            elif read_base == ref:
-                                ref_read_counts[cb_tag] += 1
-                                if ub_tag is not None:
-                                    ref_umi_sets[cb_tag].add(ub_tag)
 
-        alt_counts = _collapse_counts_by_unit(alt_read_counts, alt_umi_sets, count_unit)
-        ref_counts = _collapse_counts_by_unit(ref_read_counts, ref_umi_sets, count_unit)
+def _close_snv_worker_bam():
+    global _SNV_WORKER_BAM
+    if _SNV_WORKER_BAM is not None:
+        _SNV_WORKER_BAM.close()
+        _SNV_WORKER_BAM = None
 
-        supporting_barcodes = sorted(alt_counts.keys())
-        no_var_barcodes = sorted(ref_counts.keys())
 
-        chunk_results.append(
-            f"{chrom}\t{pos}\t{ref}\t{alt}\t{','.join(supporting_barcodes)}"
+def _init_snv_worker(bam_path, count_unit, base_quality_min, mapping_quality_min):
+    global _SNV_WORKER_CONFIG
+    _close_snv_worker_bam()
+    _SNV_WORKER_CONFIG = (bam_path, count_unit, base_quality_min, mapping_quality_min)
+    Finalize(None, _close_snv_worker_bam, exitpriority=10)
+
+
+def _process_snv_task(task):
+    global _SNV_WORKER_BAM
+    started = time.monotonic()
+    bam_path, count_unit, base_quality_min, mapping_quality_min = _SNV_WORKER_CONFIG
+    try:
+        # Open lazily so a failed open is a task error, not a respawning initializer.
+        if _SNV_WORKER_BAM is None:
+            _SNV_WORKER_BAM = pysam.AlignmentFile(bam_path, "rb")
+        results, stats = _extract_snv_support(
+            _SNV_WORKER_BAM, bam_path, task.snvs, count_unit,
+            base_quality_min, mapping_quality_min,
         )
-        chunk_no_snv_results.append(
-            f"{chrom}\t{pos}\t{ref}\t{alt}\t{','.join(no_var_barcodes)}"
-        )
-        chunk_alt_count_results.append(
-            f"{chrom}\t{pos}\t{ref}\t{alt}\t{_format_barcode_counts(alt_counts)}"
-        )
-        chunk_ref_count_results.append(
-            f"{chrom}\t{pos}\t{ref}\t{alt}\t{_format_barcode_counts(ref_counts)}"
-        )
-
-    bamfile.close()
-    logger.debug("Worker finished processing %d SNVs", len(snv_chunk))
-    return chunk_results, chunk_no_snv_results, chunk_alt_count_results, chunk_ref_count_results
+    except Exception as exc:
+        raise RuntimeError(
+            f"SNV task {task.task_id} ({task.chrom}:{task.start + 1}-{task.stop}) "
+            f"failed for BAM {bam_path}: {exc}"
+        ) from exc
+    return os.getpid(), time.monotonic() - started, results, stats
 
 
 def get_reads_supporting_snv_parallel(
@@ -819,6 +995,12 @@ def get_reads_supporting_snv_parallel(
     base_quality_min=20,
     mapping_quality_min=20,
 ):
+    """Extract support with bounded coordinate windows and regional pileup.
+
+    Internal defaults control scheduling. A raw-read guard subdivides windows
+    before pileup when the depth limit could affect multiple target coordinates.
+    A timing report is written next to output_file with the suffix '.tasks.tsv'.
+    """
     if num_processes is None:
         num_processes = max(1, cpu_count() - 1)
     else:
@@ -840,68 +1022,116 @@ def get_reads_supporting_snv_parallel(
         int(mapping_quality_min),
     )
 
-    target_chunks = max(num_processes * 20, 1)
-    chunk_size = max(1, math.ceil(len(snv_positions) / target_chunks))
-    snv_chunks = [
-        snv_positions[i : i + chunk_size]
-        for i in range(0, len(snv_positions), chunk_size)
-    ]
-    args_list = [
-        (bam_file, chunk, count_unit, int(base_quality_min), int(mapping_quality_min))
-        for chunk in snv_chunks
-    ]
-
-    if alt_count_output_file is None:
-        with Pool(processes=num_processes) as pool, open(output_file, "w") as out, open(
-            no_snv_output_file, "w"
-        ) as no_snv_out:
-            logger.info("Dispatching %d SNV chunks to worker pool", len(args_list))
-            for supporting, no_var, _, _ in tqdm(
-                pool.imap_unordered(process_snv_chunk, args_list, chunksize=1),
-                total=len(args_list),
-                desc="Parallel Processing",
-            ):
-                for line in supporting:
-                    out.write(line + "\n")
-                for line in no_var:
-                    no_snv_out.write(line + "\n")
-        logger.info(
-            "Finished parallel SNV support extraction. Results saved to %s and %s",
-            output_file,
-            no_snv_output_file,
+    with pysam.AlignmentFile(bam_file, "rb") as bamfile:
+        bamfile.check_index()
+        tasks = _plan_snv_tasks(
+            bamfile, snv_positions, PILEUP_WINDOW_BP, PILEUP_WINDOW_GAP,
+            PILEUP_WINDOW_MAX_SNVS, PILEUP_LOAD_BALANCE,
         )
-        return
-
-    assert alt_count_output_file is not None and ref_count_output_file is not None
-
-    with (
-        Pool(processes=num_processes) as pool,
-        open(output_file, "w") as out,
-        open(no_snv_output_file, "w") as no_snv_out,
-        open(alt_count_output_file, "w") as alt_count_out,
-        open(ref_count_output_file, "w") as ref_count_out,
-    ):
-        logger.info("Dispatching %d SNV chunks to worker pool", len(args_list))
-        for supporting, no_var, alt_counts, ref_counts in tqdm(
-            pool.imap_unordered(process_snv_chunk, args_list, chunksize=1),
-            total=len(args_list),
-            desc="Parallel Processing",
-        ):
-            for line in supporting:
-                out.write(line + "\n")
-            for line in no_var:
-                no_snv_out.write(line + "\n")
-            for line in alt_counts:
-                alt_count_out.write(line + "\n")
-            for line in ref_counts:
-                ref_count_out.write(line + "\n")
-
+    # Prioritize heavier contigs while retaining coordinate locality within each.
+    task_iter = iter(sorted(tasks, key=lambda task: (-task.load, task.task_id)))
+    total_snvs = sum(len(task.snvs) for task in tasks)
     logger.info(
-        "Finished parallel SNV support extraction. Results saved to %s, %s, %s and %s",
-        output_file,
-        no_snv_output_file,
-        alt_count_output_file,
-        ref_count_output_file,
+        "Planned %d coordinate windows for %d SNVs: span<=%d bp, gap<=%d bp, SNVs<=%d",
+        len(tasks), total_snvs, PILEUP_WINDOW_BP,
+        PILEUP_WINDOW_GAP, PILEUP_WINDOW_MAX_SNVS,
+    )
+    output_paths = [output_file, no_snv_output_file]
+    if alt_count_output_file is not None:
+        output_paths.extend([alt_count_output_file, ref_count_output_file])
+    task_report_file = os.fspath(output_file) + ".tasks.tsv"
+    num_processes = min(num_processes, max(1, len(tasks)))
+    completed = ThreadQueue()
+    pending = {}
+    depth_limit_columns = 0
+    depth_guard_split_tasks = 0
+    depth_guard_splits = 0
+    with ExitStack() as stack:
+        outputs = [stack.enter_context(open(path, "w")) for path in output_paths]
+        report = stack.enter_context(open(task_report_file, "w"))
+        report.write(
+            "task_id\tcontig\tstart_1based\tend_1based\tsnv_count\tworker_pid\t"
+            "elapsed_seconds\tpileup_calls\ttarget_columns\tmax_target_depth\tdepth_limit_columns\t"
+            "depth_guard_checks\tdepth_guard_reads\tdepth_guard_splits\tsingle_position_queries\n"
+        )
+        progress = stack.enter_context(tqdm(total=total_snvs, desc="SNV support", unit="SNV"))
+        if tasks:
+            pool = stack.enter_context(
+                Pool(
+                    processes=num_processes, initializer=_init_snv_worker,
+                    initargs=(
+                        bam_file, count_unit, int(base_quality_min), int(mapping_quality_min)
+                    ),
+                )
+            )
+
+            def submit_next():
+                task = next(task_iter, None)
+                if task is None:
+                    return
+                pending[task.task_id] = (task, time.monotonic())
+                pool.apply_async(
+                    _process_snv_task, (task,),
+                    callback=lambda result, task_id=task.task_id: completed.put((task_id, result, None)),
+                    error_callback=lambda error, task_id=task.task_id: completed.put((task_id, None, error)),
+                )
+
+            # Bound both queued work and completed output waiting to be written.
+            for _ in range(num_processes * 2):
+                submit_next()
+            last_flush = time.monotonic()
+            while pending:
+                try:
+                    task_id, result, error = completed.get(timeout=30)
+                except Empty:
+                    now = time.monotonic()
+                    oldest = sorted(pending.values(), key=lambda item: item[1])[:8]
+                    logger.info(
+                        "Awaiting %d submitted tasks (%d/%d SNVs complete); oldest submitted: %s",
+                        len(pending), progress.n, total_snvs,
+                        "; ".join(
+                            f"id={task.task_id} {task.chrom}:{task.start + 1}-{task.stop} "
+                            f"n={len(task.snvs)} age={now - submitted:.0f}s"
+                            for task, submitted in oldest
+                        ),
+                    )
+                    report.flush()
+                    continue
+                task, _ = pending.pop(task_id)
+                if error is not None:
+                    raise error
+                pid, elapsed, result_groups, stats = result
+                for handle, lines in zip(outputs, result_groups):
+                    if lines:
+                        handle.write("\n".join(lines) + "\n")
+                report.write(
+                    f"{task_id}\t{task.chrom}\t{task.start + 1}\t{task.stop}\t{len(task.snvs)}\t"
+                    f"{pid}\t{elapsed:.6f}\t{stats['pileup_calls']}\t{stats['target_columns']}\t"
+                    f"{stats['max_target_depth']}\t{stats['depth_limit_columns']}\t"
+                    f"{stats['depth_guard_checks']}\t{stats['depth_guard_reads']}\t"
+                    f"{stats['depth_guard_splits']}\t{stats['single_position_queries']}\n"
+                )
+                depth_limit_columns += stats["depth_limit_columns"]
+                depth_guard_split_tasks += int(stats["depth_guard_splits"] > 0)
+                depth_guard_splits += stats["depth_guard_splits"]
+                progress.update(len(task.snvs))
+                if elapsed >= 30:
+                    logger.info(
+                        "Slow task complete: id=%d %s:%d-%d, %d SNVs, pid=%d, %.1fs",
+                        task_id, task.chrom, task.start + 1, task.stop, len(task.snvs), pid, elapsed,
+                    )
+                if time.monotonic() - last_flush >= 30:
+                    report.flush()
+                    last_flush = time.monotonic()
+                submit_next()
+    logger.info(
+        "Depth guard subdivided %d task windows with %d splits; pileup max_depth remains %d.",
+        depth_guard_split_tasks, depth_guard_splits, PILEUP_MAX_DEPTH,
+    )
+    logger.info(
+        "Finished SNV support extraction. Task timings: %s; target columns at/above "
+        "the configured depth limit (%d): %d (not an uncapped coverage estimate).",
+        task_report_file, PILEUP_MAX_DEPTH, depth_limit_columns,
     )
 
 
