@@ -94,15 +94,13 @@ def log(message: object = "", *args, sep: str = " ", end: str = "\n") -> None:
 
 
 def resolve_eval_only_checkpoint(eval_only: bool, model_ckpt: str) -> bool:
-    """Fall back to training when eval-only checkpoint is missing."""
+    """Require an existing checkpoint instead of silently training during evaluation."""
 
-    if eval_only and not os.path.exists(model_ckpt):
-        log(
-            "[WARNING] Evaluation-only mode requested but checkpoint not found: %s. "
-            "Starting training instead.",
-            model_ckpt,
+    if eval_only and not os.path.isfile(model_ckpt):
+        raise FileNotFoundError(
+            f"Evaluation-only checkpoint not found: {model_ckpt}. "
+            "Set eval_only=false explicitly to train a new model."
         )
-        return False
 
     return eval_only
 
@@ -826,6 +824,7 @@ def tensors_from_anndata(
     adata_snv,
     batch_key: str = "batch",
     dense: bool = True,
+    batch_categories: Optional[List[str]] = None,
 ) -> Tuple[
     Union[torch.Tensor, np.ndarray, sparse.spmatrix],
     Union[torch.Tensor, np.ndarray, sparse.spmatrix],
@@ -928,7 +927,31 @@ def tensors_from_anndata(
             G_tensor = np.asarray(G_tensor, dtype=np.int8)
 
     # Batch codes.
-    if batch_key in adata_rna_aligned.obs:
+    if batch_categories is not None:
+        if batch_categories:
+            if batch_key not in adata_rna_aligned.obs:
+                raise ValueError(f"Checkpoint requires RNA batch column {batch_key!r}.")
+            batch_series = adata_rna_aligned.obs[batch_key]
+            if batch_series.isna().any():
+                raise ValueError(f"RNA batch column {batch_key!r} contains missing labels.")
+            batch_codes = pd.Categorical(
+                batch_series.astype(str), categories=batch_categories
+            ).codes.astype(np.int64)
+            if (batch_codes < 0).any():
+                unknown = batch_series.iloc[np.flatnonzero(batch_codes < 0)].astype(str).unique()
+                raise ValueError(
+                    f"RNA batch labels are absent from the checkpoint mapping: {unknown[:5].tolist()}"
+                )
+            n_batches = len(batch_categories)
+        else:
+            if batch_key in adata_rna_aligned.obs:
+                raise ValueError(
+                    f"Checkpoint was trained without batch column {batch_key!r}, "
+                    "but the current RNA data contains it."
+                )
+            batch_codes = np.zeros(adata_rna_aligned.n_obs, dtype=np.int64)
+            n_batches = 1
+    elif batch_key in adata_rna_aligned.obs:
         batch_series = adata_rna_aligned.obs[batch_key]
         if not pd.api.types.is_categorical_dtype(batch_series):
             batch_series = batch_series.astype("category")
@@ -1187,6 +1210,7 @@ def score_by_celltype(
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
     batch_key: str = "batch",
     rank_snvs_fn: Optional[Callable[..., pd.DataFrame]] = None,
+    batch_categories: Optional[List[str]] = None,
 ):
     """
     For each cell type:
@@ -1254,7 +1278,9 @@ def score_by_celltype(
             adata_rna_ct,
             adata_snv_ct,
             _n_batches_ct,
-        ) = tensors_from_anndata(adata_rna_ct, adata_snv_ct, batch_key=batch_key)
+        ) = tensors_from_anndata(
+            adata_rna_ct, adata_snv_ct, batch_key=batch_key, batch_categories=batch_categories
+        )
 
         # Step 1: rank SNVs with the configured screening function and broadcast.
         screening_top_k = adata_snv_ct.n_vars if top_k_attention == -1 else top_k_attention

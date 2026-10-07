@@ -22,6 +22,12 @@ warnings.filterwarnings(
 )
 
 try:
+    from .checkpoint import (
+        load_snv_checkpoint,
+        make_checkpoint_metadata,
+        save_snv_checkpoint,
+        validate_checkpoint_metadata,
+    )
     from .utility import (
         DEFAULT_PAIR_CHUNK,
         RESOLUTION,
@@ -56,6 +62,12 @@ try:
         warmup_cosine_lr,
     )
 except ImportError:
+    from checkpoint import (
+        load_snv_checkpoint,
+        make_checkpoint_metadata,
+        save_snv_checkpoint,
+        validate_checkpoint_metadata,
+    )
     from utility import (
         DEFAULT_PAIR_CHUNK,
         RESOLUTION,
@@ -999,6 +1011,7 @@ def main_run(
         model_ckpt = os.path.join(result_folder, "snv_perturbation_model.pt")
 
     eval_only = resolve_eval_only_checkpoint(eval_only, model_ckpt)
+    checkpoint = load_snv_checkpoint(model_ckpt) if eval_only else None
 
     ann_df = _prepare_annotation_dataframe(ann_df, adata_snv.var_names)
 
@@ -1007,18 +1020,32 @@ def main_run(
             result_folder, "cell_cluster_marker_genes_top10.csv"
         )
 
-    # Optionally align RNA data columns using pretrain gene order
-    if gene_list_path is None and backbone_ckpt is not None:
-        default_gene_list = backbone_ckpt + ".genes.npy"
-        if os.path.exists(default_gene_list):
-            gene_list_path = default_gene_list
-        else:
-            log(f"[WARNING] Expected gene list {default_gene_list} was not found; proceeding without alignment.")
-    if gene_list_path is not None and os.path.exists(gene_list_path):
-        pretrain_genes = np.load(gene_list_path, allow_pickle=True).tolist()
-        adata_rna = align_adata_rna_with_genes(adata_rna, pretrain_genes)
-    elif gene_list_path is not None:
-        log(f"[WARNING] Gene list {gene_list_path} was provided but not found; proceeding without alignment.")
+    # Evaluation uses the checkpoint's own feature contract, not a separate backbone.
+    batch_categories = None
+    if checkpoint is not None:
+        saved_metadata = checkpoint["metadata"]
+        if saved_metadata["batch_key"] != rna_batch_key:
+            raise ValueError(
+                f"Checkpoint batch_key mismatch: saved={saved_metadata['batch_key']!r}, "
+                f"current={rna_batch_key!r}."
+            )
+        if gene_list_path is not None:
+            supplied_genes = np.load(gene_list_path, allow_pickle=False).tolist()
+            if supplied_genes != saved_metadata["gene_names"]:
+                raise ValueError("Provided gene list does not match the SNV checkpoint gene order.")
+        adata_rna = align_adata_rna_with_genes(adata_rna, saved_metadata["gene_names"])
+        batch_categories = saved_metadata["batch_categories"]
+    else:
+        if gene_list_path is None and backbone_ckpt is not None:
+            gene_list_path = backbone_ckpt + ".genes.npy"
+        if gene_list_path is not None:
+            if not os.path.isfile(gene_list_path):
+                raise FileNotFoundError(
+                    f"Required pretrained gene list not found: {gene_list_path}. "
+                    "Cannot verify the RNA feature order for backbone transfer."
+                )
+            pretrain_genes = np.load(gene_list_path, allow_pickle=False).tolist()
+            adata_rna = align_adata_rna_with_genes(adata_rna, pretrain_genes)
 
     if (
         rna_batch_key in adata_rna.obs
@@ -1043,14 +1070,31 @@ def main_run(
         adata_snv,
         n_batches,
     ) = tensors_from_anndata(
-        adata_rna, adata_snv, batch_key=rna_batch_key, dense=False
+        adata_rna, adata_snv, batch_key=rna_batch_key, dense=False,
+        batch_categories=batch_categories,
     )
-    if is_rank0:
-        _save_snv_name_array(
-            model_ckpt + ".snvs.npy",
-            snv_names,
-            "initial model SNV list",
-        )
+    if batch_categories is None:
+        if rna_batch_key in adata_rna.obs:
+            batch_series = adata_rna.obs[rna_batch_key]
+            if batch_series.isna().any():
+                raise ValueError(f"RNA batch column {rna_batch_key!r} contains missing labels.")
+            batch_categories = [str(value) for value in batch_series.cat.categories]
+        else:
+            batch_categories = []
+    model_config = {
+        "n_genes": len(gene_names),
+        "n_snvs": len(snv_names),
+        "latent_dim": latent_dim,
+        "snv_emb_dim": snv_emb_dim,
+        "n_batches": n_batches,
+        "batch_emb_dim": batch_emb_dim,
+    }
+    checkpoint_metadata = make_checkpoint_metadata(
+        gene_names, snv_names, rna_batch_key, batch_categories, model_config
+    )
+    if checkpoint is not None:
+        validate_checkpoint_metadata(checkpoint["metadata"], checkpoint_metadata)
+        log("[INFO] Checkpoint gene/SNV identities, feature order, batch mapping and model configuration verified.")
 
     # Build DataLoader
     if isinstance(X_tensor, torch.Tensor) and isinstance(G_tensor, torch.Tensor):
@@ -1076,18 +1120,11 @@ def main_run(
     )
 
     # Build model
-    model = SNVPerturbationModel(
-        n_genes=len(gene_names),
-        n_snvs=len(snv_names),
-        latent_dim=latent_dim,
-        snv_emb_dim=snv_emb_dim,
-        n_batches=n_batches,
-        batch_emb_dim=batch_emb_dim,
-    )
+    model = SNVPerturbationModel(**model_config)
 
     # Optionally load a pre-trained backbone and freeze
     trainables = None
-    if backbone_ckpt is not None:
+    if backbone_ckpt is not None and not eval_only:
         model = safe_load_backbone_into_snv_model(model, backbone_ckpt, device=device)
         if freeze_encoder:
             trainables = freeze_encoder_only(model)
@@ -1096,7 +1133,7 @@ def main_run(
     if is_rank0:
         log_model_parameter_summary(model)
 
-    if use_distributed:
+    if use_distributed and not eval_only:
         model = DistributedDataParallel(
             model,
             device_ids=[device.index] if device.type == "cuda" else None,
@@ -1108,10 +1145,10 @@ def main_run(
             )
 
     if eval_only:
-        state = torch.load(model_ckpt, map_location=device)
-        state = _strip_distributed_prefix(state)
+        state = _strip_distributed_prefix(checkpoint["model_state_dict"])
         target_model = model.module if isinstance(model, DistributedDataParallel) else model
-        target_model.load_state_dict(state)
+        target_model.load_state_dict(state, strict=True)
+        del state, checkpoint
         target_model.eval()
         if is_rank0:
             log(f"[INFO] Loaded model checkpoint from {model_ckpt} for evaluation.")
@@ -1151,7 +1188,10 @@ def main_run(
                 else model.state_dict()
             )
             state = _strip_distributed_prefix(state)
-            torch.save(state, model_ckpt)
+            save_snv_checkpoint(model_ckpt, state, checkpoint_metadata)
+            _save_snv_name_array(
+                model_ckpt + ".snvs.npy", snv_names, "initial model SNV list"
+            )
             log(f"[INFO] Saved trained model checkpoint to {model_ckpt}")
 
     if dist.is_initialized():
@@ -1227,7 +1267,7 @@ def main_run(
 
         if not top_snv_names:
             log("[WARN] No SNVs passed the latent-contribution prefilter; skipping scoring.")
-            if is_rank0:
+            if is_rank0 and not eval_only:
                 _save_snv_name_array(
                     model_ckpt + ".final_snvs.npy",
                     [],
@@ -1252,11 +1292,12 @@ def main_run(
         scores_path = os.path.join(result_folder, "snv_perturbation_scores.csv")
         if is_rank0:
             df_scores.to_csv(scores_path, index=False)
-            _save_snv_name_array(
-                model_ckpt + ".final_snvs.npy",
-                top_snv_names,
-                "final scored SNV list",
-            )
+            if not eval_only:
+                _save_snv_name_array(
+                    model_ckpt + ".final_snvs.npy",
+                    top_snv_names,
+                    "final scored SNV list",
+                )
         if dist.is_initialized():
             dist.barrier()
         log(f"[INFO] Saved cell-type-free SNV perturbation scores to {scores_path}")
@@ -1329,6 +1370,7 @@ def main_run(
         pair_chunk=pair_chunk,
         batch_key=rna_batch_key,
         rank_snvs_fn=rank_snvs_by_latent_contribution,
+        batch_categories=batch_categories,
     )
     if is_rank0:
         all_screening = pd.concat(
@@ -1371,11 +1413,12 @@ def main_run(
         all_screening.to_csv(screening_by_ct_path, index=False)
         all_scores.to_csv(scores_by_ct_path, index=False)
         final_snv_names = list(dict.fromkeys(all_scores["SNV"].astype(str).tolist()))
-        _save_snv_name_array(
-            model_ckpt + ".final_snvs.npy",
-            final_snv_names,
-            "final scored SNV list",
-        )
+        if not eval_only:
+            _save_snv_name_array(
+                model_ckpt + ".final_snvs.npy",
+                final_snv_names,
+                "final scored SNV list",
+            )
 
         log("[INFO] Saved snv_perturbation_scores.")
 
