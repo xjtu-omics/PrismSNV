@@ -100,7 +100,8 @@ snv_eff:
   cell_type_free: false
   # Device for SNV effect training.
   device: cuda
-  # If true, skip training and only evaluate a saved checkpoint. Use false for training, true for eval only.
+  # Evaluate a versioned SNV checkpoint with matching features, batches, and model dimensions.
+  # Missing or legacy checkpoints raise an error; evaluation never falls back to training.
   eval_only: false
   # Number of SNV pairs per sparse decoding chunk. Typical range: 20000-50000, depending on memory.
   pair_chunk: 20000
