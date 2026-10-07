@@ -2271,16 +2271,8 @@ def batch_score_all_snvs(
     model.eval()
     model.to(device)
 
-    n_cells = expression_matrix.shape[0]
-
     def agg1d(t: torch.Tensor):
         return (t.mean() if use_mean else t.median()).item()
-
-    # Optional cell subsampling.
-    if (gene_sample_cells is None) or (gene_sample_cells <= 0) or (gene_sample_cells >= n_cells):
-        sampled_cell_indices = torch.arange(n_cells)
-    else:
-        sampled_cell_indices = torch.arange(min(n_cells, gene_sample_cells))
 
     local_rows = []
 
