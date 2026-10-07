@@ -205,6 +205,18 @@ def _parse_info_field(info_text):
     return parsed
 
 
+def _select_alt_value(raw_value, alt_index: int, n_alts: int):
+    """Select a Number=A value without broadcasting ambiguous multi-ALT fields."""
+    if raw_value in (None, "", "."):
+        return None
+    if n_alts == 1:
+        return raw_value
+    values = raw_value.split(",")
+    if len(values) != n_alts:
+        raise ValueError(f"Expected {n_alts} per-ALT values, got {raw_value!r}.")
+    return values[alt_index]
+
+
 def _parse_af_value(raw_value):
     if raw_value is None:
         return float("nan")
@@ -249,10 +261,11 @@ def _load_vcf_af_lookup(vcf_path, af_field, af_threshold, strict_snv_format=Fals
                     raise ValueError(f"Malformed VCF record with <8 columns: {line.strip()}")
                 continue
 
-            chrom, pos_text, _id, ref, alt = columns[:5]
+            chrom, pos_text, _id, ref, alt_text = columns[:5]
+            alts = alt_text.split(",")
             info_text = columns[7]
             try:
-                snv_key = _build_snv_key(chrom, int(pos_text), ref, alt)
+                snv_keys = [_build_snv_key(chrom, int(pos_text), ref, alt) for alt in alts]
             except ValueError:
                 stats["vcf_records_malformed"] += 1
                 if strict_snv_format:
@@ -262,21 +275,23 @@ def _load_vcf_af_lookup(vcf_path, af_field, af_threshold, strict_snv_format=Fals
             info_dict = _parse_info_field(info_text)
             if af_field in info_dict:
                 af_field_seen = True
-            af_value = _parse_af_value(info_dict.get(af_field))
-            if np.isnan(af_value):
-                stats["vcf_records_with_missing_af"] += 1
-            elif float(af_value) > float(af_threshold):
-                stats["vcf_records_with_af_gt_threshold"] += 1
+            try:
+                af_values = [
+                    _parse_af_value(_select_alt_value(info_dict.get(af_field), i, len(alts)))
+                    for i in range(len(alts))
+                ]
+            except ValueError as exc:
+                raise ValueError(f"{vcf_path}: {chrom}:{pos_text} INFO/{af_field}: {exc}") from exc
+            stats["vcf_records_with_missing_af"] += int(any(np.isnan(v) for v in af_values))
+            stats["vcf_records_with_af_gt_threshold"] += int(any(v > float(af_threshold) for v in af_values))
+            stats["vcf_records_duplicate_keys"] += int(any(key in af_lookup for key in snv_keys))
 
-            if snv_key in af_lookup:
-                stats["vcf_records_duplicate_keys"] += 1
-                previous = af_lookup[snv_key]
-                if np.isnan(previous) and not np.isnan(af_value):
+            for snv_key, af_value in zip(snv_keys, af_values):
+                previous = af_lookup.get(snv_key, float("nan"))
+                if np.isnan(previous):
                     af_lookup[snv_key] = af_value
                 elif not np.isnan(af_value):
                     af_lookup[snv_key] = max(previous, af_value)
-            else:
-                af_lookup[snv_key] = af_value
 
             stats["vcf_records_total"] += 1
 
@@ -733,13 +748,15 @@ class _SnvTask(NamedTuple):
 def _parse_snv_records(snv_positions):
     records = []
     for snv in snv_positions:
-        # Preserve the existing VCF/TSV interpretation and allele spelling.
+        # Expand each ALT while preserving the VCF/TSV interpretation and spelling.
         if len(snv) >= 5:
-            records.append((snv[0], int(snv[1]), snv[3], snv[4]))
+            ref, alt_text = snv[3], snv[4]
         elif len(snv) >= 4:
-            records.append((snv[0], int(snv[1]), snv[2], snv[3]))
+            ref, alt_text = snv[2], snv[3]
         else:
             logger.warning("Skipping malformed SNV record: %s", snv)
+            continue
+        records.extend((snv[0], int(snv[1]), ref, alt) for alt in alt_text.split(","))
     return records
 
 
@@ -1618,19 +1635,23 @@ def generate_barcode_snv_matrix(
     logger.info("Matrix saved to %s", matrix_file)
 
 
-def extract_frequency_from_vcf_line(columns):
+def extract_frequency_from_vcf_line(columns, alt_index: int = 0) -> float | None:
     """
-    Extract allele frequency from VCF data line.
+    Extract one ALT's frequency from the first sample of a VCF data line.
 
     Priority:
-    1. FREQ field in sample (VarScan format, column 9, 7th field after ':')
-    2. Calculate from AD/DP in sample
+    1. Per-ALT FREQ percentage (VarScan convention).
+    2. AD[alt_index + 1]/DP (Number=R), or scalar AD for one VarScan ALT.
 
     Returns:
         float or None: allele frequency (0-1 scale)
     """
     if len(columns) < 10:
         return None
+
+    n_alts = len(columns[4].split(","))
+    if not 0 <= alt_index < n_alts:
+        raise IndexError(f"ALT index {alt_index} outside [0, {n_alts}).")
 
     sample_field = columns[9]
     format_field = columns[8]
@@ -1639,13 +1660,12 @@ def extract_frequency_from_vcf_line(columns):
     sample_values = sample_field.split(':')
     sample_dict = dict(zip(format_keys, sample_values))
 
-    if 'FREQ' in sample_dict:
-        freq_str = sample_dict['FREQ'].rstrip('%')
-        if freq_str and freq_str != '.':
-            try:
-                return float(freq_str) / 100.0
-            except ValueError:
-                pass
+    try:
+        freq_str = _select_alt_value(sample_dict.get('FREQ'), alt_index, n_alts)
+        if freq_str not in (None, '', '.'):
+            return float(freq_str.rstrip('%')) / 100.0
+    except ValueError:
+        pass
 
     if 'AD' in sample_dict and 'DP' in sample_dict:
         ad_str = sample_dict['AD']
@@ -1659,14 +1679,13 @@ def extract_frequency_from_vcf_line(columns):
             if dp <= 0:
                 return None
 
-            if ',' in ad_str:
-                ad_values = ad_str.split(',')
-                ad = 0
-                for val in ad_values[1:]:
-                    if val and val != '.':
-                        ad += int(val)
+            ad_values = ad_str.split(',')
+            if len(ad_values) == n_alts + 1:
+                ad = int(ad_values[alt_index + 1])
+            elif n_alts == 1 and len(ad_values) == 1:
+                ad = int(ad_values[0])
             else:
-                ad = int(ad_str)
+                return None
 
             return ad / dp
         except (ValueError, ZeroDivisionError, IndexError):
@@ -1677,8 +1696,8 @@ def extract_frequency_from_vcf_line(columns):
 
 def filter_vcf(vcf_file, output_vcf_file, percentage):
     """
-    Filter VCF by allele frequency.
-    Exactly the same as the original: only retain SNVs with freq < percentage.
+    Keep intact VCF records with at least one ALT below the frequency threshold.
+    The union builder applies the same threshold to each ALT independently.
     """
     input_file = vcf_file
     output_file = output_vcf_file
@@ -1714,8 +1733,12 @@ def filter_vcf(vcf_file, output_vcf_file, percentage):
                 dropped_count += 1
                 continue
 
-            freq = extract_frequency_from_vcf_line(columns)
-            if freq is None or not np.isfinite(freq):
+            frequencies = [
+                extract_frequency_from_vcf_line(columns, i)
+                for i in range(len(columns[4].split(",")))
+            ]
+            frequencies = [freq for freq in frequencies if freq is not None and np.isfinite(freq)]
+            if not frequencies:
                 unparsable_count += 1
                 dropped_count += 1
                 logger.warning(
@@ -1724,7 +1747,7 @@ def filter_vcf(vcf_file, output_vcf_file, percentage):
                 )
                 continue
 
-            if float(freq) * 100.0 < float(percentage):
+            if any(freq * 100.0 < float(percentage) for freq in frequencies):
                 outfile.write(line)
                 kept_count += 1
             else:
@@ -1739,7 +1762,7 @@ def filter_vcf(vcf_file, output_vcf_file, percentage):
     )
 
 
-def build_snv_union_tsv(filtered_vcfs, union_tsv_path, sample_names):
+def build_snv_union_tsv(filtered_vcfs, union_tsv_path, sample_names, percentage=None):
     """
     Extract unique union of chr/pos/ref/alt from multiple samples' filtered VCFs,
     and write to SNV_union.tsv (no header, 4 columns).
@@ -1748,6 +1771,7 @@ def build_snv_union_tsv(filtered_vcfs, union_tsv_path, sample_names):
         filtered_vcfs: list of filtered VCF file paths
         union_tsv_path: output path for SNV union TSV
         sample_names: list of sample names corresponding to filtered_vcfs
+        percentage: optional per-ALT frequency upper bound, in percent
 
     Returns:
         dict: SNV key -> {sample_name: frequency}
@@ -1768,16 +1792,19 @@ def build_snv_union_tsv(filtered_vcfs, union_tsv_path, sample_names):
                     cols = line.strip().split("\t")
                     if len(cols) < 5:
                         continue
-                    chrom, pos, ref, alt = cols[0], cols[1], cols[3], cols[4]
-                    key = (chrom, pos, ref, alt)
-                    if key not in seen:
-                        seen.add(key)
-                        out.write("\t".join([chrom, pos, ref, alt]) + "\n")
-                        count += 1
-
-                    freq = extract_frequency_from_vcf_line(cols)
-                    if freq is not None:
-                        snv_freq_by_sample[key][sample_name] = freq
+                    chrom, pos, ref = cols[0], cols[1], cols[3]
+                    for alt_index, alt in enumerate(cols[4].split(",")):
+                        freq = extract_frequency_from_vcf_line(cols, alt_index)
+                        if percentage is not None and percentage > 0:
+                            if freq is None or not np.isfinite(freq) or freq * 100.0 >= percentage:
+                                continue
+                        key = (chrom, pos, ref, alt)
+                        if key not in seen:
+                            seen.add(key)
+                            out.write("\t".join(key) + "\n")
+                            count += 1
+                        if freq is not None:
+                            snv_freq_by_sample[key][sample_name] = freq
     logger.info("SNV union written to %s with %d unique SNVs", union_tsv_path, count)
     return dict(snv_freq_by_sample)
 
@@ -1914,7 +1941,9 @@ def main(config_path):
     # ===== 2. Generate global SNV_union.tsv =====
     if snv_union_cfg == "auto":
         snv_union_file = os.path.join(output_dir, "SNV_union.tsv")
-        snv_freq_by_sample = build_snv_union_tsv(filtered_vcfs, snv_union_file, sample_names_ordered)
+        snv_freq_by_sample = build_snv_union_tsv(
+            filtered_vcfs, snv_union_file, sample_names_ordered, percentage=percentage
+        )
     else:
         snv_union_file = snv_union_cfg
         snv_freq_by_sample = {}
