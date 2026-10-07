@@ -183,9 +183,15 @@ def get_device(prefer: str = "cuda") -> torch.device:
 
 
 def warmup_cosine_lr(optimizer, warmup_epochs, total_epochs, base_lr, eta_min=1e-8):
+    if total_epochs <= 0:
+        raise ValueError("total_epochs must be greater than 0.")
+    if warmup_epochs < 0:
+        raise ValueError("warmup_epochs must be non-negative.")
+
     def lr_lambda(epoch):
-        if epoch < warmup_epochs:
-            return (epoch + 1) / warmup_epochs
+        # Short runs use only warmup, capped at the base learning rate.
+        if epoch < warmup_epochs or total_epochs <= warmup_epochs:
+            return min((epoch + 1) / warmup_epochs, 1.0)
         progress = (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
         return eta_min / base_lr + 0.5 * (1 + math.cos(math.pi * progress)) * (1 - eta_min / base_lr)
 

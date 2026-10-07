@@ -255,12 +255,8 @@ def pretrain_rna_backbone(
     latent_dim = _coerce_str_to_number("latent_dim", latent_dim, int)
     batch_size = _coerce_str_to_number("batch_size", batch_size, int)
     epochs = _coerce_str_to_number("epochs", epochs, int)
-    if epochs < 10:
-        log(
-            f"[WARNING] epochs={epochs} is smaller than 10; overriding epochs to 10 "
-            "to keep the LR warmup/cosine schedule stable."
-        )
-        epochs = 10
+    if epochs <= 0:
+        raise ValueError("epochs must be greater than 0.")
     lr = _coerce_str_to_number("lr", lr, float)
     weight_decay = _coerce_str_to_number("weight_decay", weight_decay, float)
     kl_warmup_epochs = _coerce_str_to_number("kl_warmup_epochs", kl_warmup_epochs, int)
