@@ -301,7 +301,8 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     )
     if not argv:
         parser.print_help()
-        parser.exit(2, "\nerror: the following arguments are required: command\n")
+        print("\nPlease specify a command.")
+        return
     if argv[0] in {"-h", "--help"}:
         parser.print_help()
         return
