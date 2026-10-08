@@ -7,7 +7,6 @@ usage: prismsnv bam2vcf \\
     --outer-jobs <N> \\
     --inner-threads <N> \\
     --reference <reference.fa> \\
-    --varscan-jar <VarScan.jar> \\
     --rna-edit-bed <RNA_editing.bed> \\
     --out-dir <output_dir> \\
     --bam-files <bam1> [bam2 ...]
@@ -20,13 +19,12 @@ options:
   --outer-jobs <N>           number of BAM files to process in parallel
   --inner-threads <N>        number of samtools threads used for each BAM file
   --reference <reference.fa> reference genome FASTA with a readable .fai index
-  --varscan-jar <VarScan.jar>
-                             path to VarScan.jar
   --rna-edit-bed <BED>       BED file containing RNA-editing sites to remove
   --out-dir <output_dir>     output directory for generated SNV-calling files
   --bam-files <bam...>       one or more input BAM files
 
 notes:
+  VarScan v2.4.6 is bundled and used automatically; Java is required.
   --reference requires a readable FASTA index at <reference.fa>.fai
   Missing BAM indexes are created with samtools index during preflight.
 
@@ -35,7 +33,6 @@ example:
     --outer-jobs 6 \\
     --inner-threads 4 \\
     --reference genome.fa \\
-    --varscan-jar VarScan.jar \\
     --rna-edit-bed RNA_edit.bed \\
     --out-dir ./out \\
     --bam-files \\
@@ -46,7 +43,6 @@ EOF
 OUTER_JOBS=""      # Number of BAM files to process in parallel
 INNER_THREADS=""   # Number of threads for samtools per BAM file
 REF_FA=""          # Reference genome file
-VARSCAN_JAR=""     # Path to VarScan.jar
 RNA_EDIT_BED=""    # BED file with RNA editing sites
 OUT_DIR=""         # Output directory
 BAM_FILES=()
@@ -78,15 +74,6 @@ while [ "$#" -gt 0 ]; do
                 exit 1
             fi
             REF_FA="$2"
-            shift 2
-            ;;
-        --varscan-jar)
-            if [ "$#" -lt 2 ]; then
-                echo "ERROR: Missing value for --varscan-jar" >&2
-                usage
-                exit 1
-            fi
-            VARSCAN_JAR="$2"
             shift 2
             ;;
         --rna-edit-bed)
@@ -142,12 +129,16 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ -z "$OUTER_JOBS" ] || [ -z "$INNER_THREADS" ] || [ -z "$REF_FA" ] || [ -z "$VARSCAN_JAR" ] || [ -z "$RNA_EDIT_BED" ] || [ -z "$OUT_DIR" ]; then
+if [ -z "$OUTER_JOBS" ] || [ -z "$INNER_THREADS" ] || [ -z "$REF_FA" ] || [ -z "$RNA_EDIT_BED" ] || [ -z "$OUT_DIR" ]; then
     echo "ERROR: Missing required options." >&2
     usage
     exit 1
 fi
 
+
+# The CLI supplies the script path as $0 when invoking Bash with -c.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd)
+VARSCAN_JAR="${SCRIPT_DIR}/vendor/VarScan.v2.4.6.jar"
 
 error_flag=0
 is_positive_integer() {
@@ -328,6 +319,7 @@ if [ "$error_flag" -ne 0 ]; then
 fi
 
 echo "[$(date)] Preflight checks passed."
+echo "[$(date)] Using VarScan JAR: $VARSCAN_JAR"
 
 check_chrom_naming_compat() {
     local ref_fa="$1"

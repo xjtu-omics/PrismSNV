@@ -43,7 +43,6 @@ requirements:
     - scrublet
     - samtools
     - tqdm
-    - varscan
 
 test:
   imports:
@@ -60,8 +59,10 @@ test:
 
 about:
   home: https://github.com/xjtu-omics/PrismSNV
-  license: GPL-3.0-or-later
-  license_file: LICENSE
+  license: GPL-3.0-or-later AND LicenseRef-VarScan
+  license_file:
+    - LICENSE
+    - src/prismsnv/preprocess/vendor/VarScan.v2.4.6.description.txt
   summary: Single-cell SNV functional effect analysis toolkit
   description: |
     PrismSNV is a single-cell modeling framework for quantifying functional

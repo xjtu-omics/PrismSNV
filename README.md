@@ -83,8 +83,6 @@ conda activate prismsnv
 conda install -c conda-forge -c bioconda bash samtools bedtools openjdk -y
 ```
 
-> ⚠️ You also need a [VarScan](https://varscan.sourceforge.net/) JAR file and should pass it with `--varscan-jar`.
-
 ### 4. ⚙️ Install PrismSNV locally
 
 Run this from the repository root:
@@ -109,11 +107,11 @@ PrismSNV is driven by a single `prismsnv` command-line entry point that dispatch
 
 | Command | Description |
 | --- | --- |
+| `get_template` | Writes a `train_config.yaml` template into the current directory. |
 | `bam2vcf` | Runs the Bash SNV-calling pipeline for one or more BAM files, producing filtered VCF files after removing RNA-editing sites. |
 | `snv2barcode` | Builds per-sample and merged barcode-by-SNV AnnData matrices from BAM, VCF, and barcode inputs defined in a YAML config. |
 | `pre_train` | Aligns pretraining and finetuning RNA AnnData inputs, then trains the RNA-only backbone model. |
 | `snv_effect` | Trains or evaluates the SNV perturbation model and exports functional-effect results. |
-| `get_template` | Writes a `train_config.yaml` template into the current directory. |
 
 ### Typical workflow
 
@@ -123,7 +121,7 @@ prismsnv get_template --output train_config.yaml
 
 # 1. Call SNVs from BAM files
 prismsnv bam2vcf --outer-jobs 6 --inner-threads 4 \
-  --reference genome.fa --varscan-jar VarScan.jar \
+  --reference genome.fa \
   --rna-edit-bed RNA_edit.bed --out-dir ./snv_call_out \
   --bam-files sample1.bam sample2.bam
 

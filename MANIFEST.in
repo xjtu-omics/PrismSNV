@@ -2,3 +2,4 @@ include README.md
 include LICENSE
 include LOGO.png
 recursive-include src/prismsnv/preprocess *.sh
+recursive-include src/prismsnv/preprocess/vendor *.jar *.txt *.md

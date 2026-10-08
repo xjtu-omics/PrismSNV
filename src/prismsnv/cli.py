@@ -61,7 +61,7 @@ def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
     examples = {
         "bam2vcf": (
             "prismsnv bam2vcf --outer-jobs 6 --inner-threads 4 \\\n"
-            "  --reference genome.fa --varscan-jar VarScan.jar \\\n"
+            "  --reference genome.fa \\\n"
             "  --rna-edit-bed RNA_edit.bed --out-dir ./snv_call_out \\\n"
             "  --bam-files sample1.bam sample2.bam"
         ),
@@ -95,12 +95,6 @@ def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
             required=True,
             metavar="FASTA",
             help="Reference genome FASTA with a readable .fai index.",
-        )
-        parser.add_argument(
-            "--varscan-jar",
-            required=True,
-            metavar="JAR",
-            help="Path to VarScan.jar.",
         )
         parser.add_argument(
             "--rna-edit-bed",
@@ -279,7 +273,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
                 java, bedtools, and awk.
                 Example:
                   prismsnv bam2vcf --outer-jobs 6 --inner-threads 4 \\
-                    --reference genome.fa --varscan-jar VarScan.jar \\
+                    --reference genome.fa \\
                     --rna-edit-bed RNA_edit.bed --out-dir ./snv_call_out \\
                     --bam-files sample1.bam sample2.bam
 
@@ -378,9 +372,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
         script_text = script_path.read_text(encoding="utf-8")
         script_text = script_text.replace("\r\n", "\n").replace("\r", "\n")
+        # Supply the script path as $0 so Bash can locate bundled resources.
         completed = subprocess.run(
-            [bash_path, "-s", "--", *command_args],
-            input=script_text.encode("utf-8"),
+            [bash_path, "-c", script_text, str(script_path), *command_args],
         )
         if completed.returncode != 0:
             raise SystemExit(completed.returncode)
