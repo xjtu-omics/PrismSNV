@@ -448,8 +448,9 @@ def pretrain_rna_backbone(
             patience_active = patience_active and (current_lambda_adv >= lambda_adv)
 
         if patience_active:
-            if (best is None) or (val_avg + 1e-5 < best):
-                best = val_avg
+            selection_loss = val_recon + beta_max * val_kl
+            if (best is None) or (selection_loss + 1e-5 < best):
+                best = selection_loss
                 best_epoch = epoch
                 bad_epochs = 0
                 torch.save(model.state_dict(), out_ckpt)
