@@ -7,7 +7,7 @@ name = "prismsnv"
 version = "0.1.0"
 description = "Single-cell SNV functional effect analysis toolkit"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [
   { name = "Peisen Sun", email = "sunpeisen@stu.xjtu.edu.cn" },
@@ -26,24 +26,25 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-  "anndata",
-  "matplotlib",
-  "numba",
-  "numpy",
-  "pandas",
-  "pysam",
-  "PyYAML",
-  "igraph",
-  "leidenalg",
-  "scanpy",
-  "scipy",
-  "scrublet",
-  "torch",
-  "tqdm",
+  "anndata==0.11.4",
+  "matplotlib==3.10.9",
+  "numba==0.67.0",
+  "numpy==2.2.6",
+  "pandas==2.3.3",
+  "pysam==0.24.0",
+  "PyYAML==6.0.3",
+  "igraph==1.0.0",
+  "leidenalg==0.12.0",
+  "scanpy==1.12.4",
+  "scipy==1.15.3",
+  "scrublet==0.2.3",
+  "torch==2.12.0",
+  "tqdm==4.65.0",
+  "scikit-learn==1.7.2",
 ]
 
 [project.urls]
