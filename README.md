@@ -73,7 +73,7 @@ cd PrismSNV
 ### 2. 🐍 Create an environment
 
 ```bash
-conda create -n prismsnv python=3.10 -y
+conda create -n prismsnv python=3.12 -y
 conda activate prismsnv
 ```
 
