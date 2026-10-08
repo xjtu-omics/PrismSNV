@@ -7,7 +7,32 @@ import textwrap
 from pathlib import Path
 from typing import Iterable, Optional
 
+BANNER = (
+    "██████╗ ██████╗ ██╗███████╗███╗   ███╗███████╗███╗   ██╗██╗   ██╗\n"
+    "██╔══██╗██╔══██╗██║██╔════╝████╗ ████║██╔════╝████╗  ██║██║   ██║\n"
+    "██████╔╝██████╔╝██║███████╗██╔████╔██║███████╗██╔██╗ ██║██║   ██║\n"
+    "██╔═══╝ ██╔═══╝ ██║╚════██║██║╚██╔╝██║╚════██║██║╚██╗██║╚██╗ ██╔╝\n"
+    "██║     ██║     ██║███████║██║ ╚═╝ ██║███████║██║ ╚████║ ╚████╔╝\n"
+    "╚═╝     ╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝  ╚═══╝"
+)
+
 COMMANDS = ("bam2vcf", "snv2barcode", "pre_train", "snv_effect", "get_template")
+
+
+def _print_banner() -> None:
+    """Print the PrismSNV ASCII-art logo above the top-level help text."""
+    from importlib import metadata
+
+    try:
+        version = metadata.version("prismsnv")
+    except metadata.PackageNotFoundError:
+        version = "unknown"
+    tagline = f"v{version} · Single-cell SNV functional effect analysis toolkit"
+    try:
+        print(f"{BANNER}\n\n{tagline}\n")
+    except UnicodeEncodeError:
+        # Terminals with legacy encodings fall back to a plain-text tagline.
+        print(f"PrismSNV {tagline}\n")
 
 
 def _build_subcommand_parser(command: str) -> argparse.ArgumentParser:
@@ -300,10 +325,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         help="Pipeline stage to run.",
     )
     if not argv:
+        _print_banner()
         parser.print_help()
         print("\nPlease specify a command.")
         return
     if argv[0] in {"-h", "--help"}:
+        _print_banner()
         parser.print_help()
         return
 
