@@ -3,3 +3,4 @@ tmp/
 /.sisyphus
 /output
 /src/prismsnv.egg-info
+/.idea
