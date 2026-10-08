@@ -188,10 +188,6 @@ class RNAOnlyBackbone(nn.Module):
         return mu, dispersion
 
     @staticmethod
-    def kl_gauss(mu: torch.Tensor, log_var: torch.Tensor):
-        return -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=1).mean()
-
-    @staticmethod
     def nb_nll(counts: torch.Tensor, mean: torch.Tensor, dispersion: torch.Tensor, epsilon: float = 1e-6):
         counts = torch.clamp(counts, min=0.)
         mean = torch.clamp(mean, min=epsilon)
