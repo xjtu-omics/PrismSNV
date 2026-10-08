@@ -145,7 +145,7 @@ prismsnv <command> --help
 
 ## 📖 Documentation
 
-Please see the [PrismSNV documentation](https://muledoc.readthedocs.io/en/latest/index.html) for detailed usage.
+Please see the [PrismSNV documentation](https://prismsnvdoc.readthedocs.io/en/latest/index.html) for detailed usage.
 
 ---
 
