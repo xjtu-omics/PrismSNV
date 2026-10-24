@@ -26,7 +26,6 @@ DEFAULT_PAIR_CHUNK = 20_000
 # Default Leiden resolution.
 RESOLUTION = 0.4
 # Defaults for SNV co-occurrence de-duplication before final celltype score export.
-COOCCURRENCE_DEDUP_ENABLED = True
 COOCCURRENCE_MIN_CARRIER_CELLS = 20
 COOCCURRENCE_MIN_SHARED_CELLS = 20
 COOCCURRENCE_JACCARD_THRESHOLD = 0.85
@@ -1211,7 +1210,6 @@ def score_by_celltype(
     cell_batch: int = 128,
     gene_sample_cells: int = None,
     use_mean: bool = True,
-    normalize_delta: bool = True,
     eps: float = 1e-6,
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
     batch_key: str = "batch",
@@ -1360,7 +1358,6 @@ def score_by_celltype(
             cell_batch=cell_batch,
             gene_sample_cells=gene_sample_cells,
             use_mean=use_mean,
-            normalize_delta=normalize_delta,
             eps=eps,
             pair_chunk=pair_chunk,
         )
@@ -2230,7 +2227,6 @@ def batch_score_all_snvs(
     cell_batch: int = 128,
     gene_sample_cells: int = None,
     use_mean: bool = True,
-    normalize_delta: bool = True,
     eps: float = 1e-6,
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
 ):
@@ -2298,7 +2294,6 @@ def batch_score_all_snvs(
             device=device,
             cell_batch=cell_batch,
             pair_chunk=pair_chunk,
-            normalize_delta=normalize_delta,
         )
 
         if len(per_cell_scores) == 0:
@@ -2381,7 +2376,6 @@ def batch_score_snvs_by_cell(
     device: str = None,
     cell_batch: int = 128,
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
-    normalize_delta: bool = True,
 ):
     if dist.is_available() and dist.is_initialized():
         rank = dist.get_rank()
@@ -2456,7 +2450,6 @@ def batch_score_snvs_by_cell(
             device=device,
             cell_batch=cell_batch,
             pair_chunk=pair_chunk,
-            normalize_delta=normalize_delta,
             restrict_to_carriers=True,
         )
         if not per_cell_scores:
@@ -2514,7 +2507,6 @@ def score_snv_effects(
     device: str = "cuda",
     cell_batch: int = 128,
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
-    normalize_delta: bool = True,
     eps: float = 1e-6,
     restrict_to_carriers: bool = True,
 ) -> Dict[str, torch.Tensor]:
