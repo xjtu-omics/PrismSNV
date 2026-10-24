@@ -1152,22 +1152,78 @@ def get_reads_supporting_snv_parallel(
     )
 
 
+_NUMERIC_BARCODE_PATTERN = re.compile(
+    r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$"
+)
+
+
+def _read_barcode_table(cb_file, expected_columns, column_names):
+    """Read barcodes as strings and reject empty or numeric-only identifiers."""
+
+    try:
+        table = pd.read_csv(
+            cb_file,
+            header=None,
+            dtype=str,
+            keep_default_na=False,
+        )
+    except pd.errors.EmptyDataError as exc:
+        raise ValueError(f"Barcode file is empty: {cb_file}") from exc
+
+    if table.shape[1] != expected_columns:
+        raise ValueError(
+            f"Barcode file {cb_file} must contain {expected_columns} columns, "
+            f"but found {table.shape[1]}."
+        )
+
+    table.columns = column_names
+    barcodes = table["barcode"].astype(str).str.strip()
+    empty_mask = barcodes == ""
+    if empty_mask.any():
+        preview = barcodes[empty_mask].head(5).tolist()
+        raise ValueError(
+            f"Barcode file {cb_file} contains {int(empty_mask.sum())} empty "
+            f"barcode(s): {preview}."
+        )
+
+    numeric_mask = barcodes.map(
+        lambda value: _NUMERIC_BARCODE_PATTERN.fullmatch(value) is not None
+    )
+    if numeric_mask.any():
+        preview = barcodes[numeric_mask].head(5).tolist()
+        raise ValueError(
+            f"Barcode file {cb_file} contains {int(numeric_mask.sum())} numeric-only "
+            f"barcode(s), which are not allowed: {preview}. Numeric-only barcodes are "
+            "easily coerced to numeric values and then fail to match string CB tags in the BAM. "
+            "Use non-numeric barcode identifiers."
+        )
+
+    table["barcode"] = barcodes
+    return table
+
+
 def read_cb_list_spatial(cb_file):
-    df = pd.read_csv(cb_file, header=None)
-    df.columns = ["barcode", "in_tissue", "x", "y", "px", "py"]
-    return list(df[df["in_tissue"] == 1]["barcode"])
+    """Read in-tissue spatial barcodes; numeric-only identifiers are rejected."""
+
+    df = _read_barcode_table(cb_file, 6, ["barcode", "in_tissue", "x", "y", "px", "py"])
+    in_tissue = pd.to_numeric(df["in_tissue"].str.strip(), errors="coerce")
+    return df.loc[in_tissue == 1, "barcode"].tolist()
 
 
 def read_cb_df_spatial(cb_file):
-    df = pd.read_csv(cb_file, header=None)
-    df.columns = ["barcode", "in_tissue", "x", "y", "px", "py"]
-    return df[df["in_tissue"] == 1]
+    """Read in-tissue spatial barcode rows; numeric-only identifiers are rejected."""
+
+    df = _read_barcode_table(cb_file, 6, ["barcode", "in_tissue", "x", "y", "px", "py"])
+    in_tissue = pd.to_numeric(df["in_tissue"].str.strip(), errors="coerce")
+    df["in_tissue"] = in_tissue
+    return df.loc[in_tissue == 1].copy()
 
 
 def read_cb_list_sc(cb_file):
-    df = pd.read_csv(cb_file, header=None)
-    df.columns = ["barcode"]
-    return list(df["barcode"])
+    """Read single-cell barcodes; numeric-only identifiers are rejected."""
+
+    df = _read_barcode_table(cb_file, 1, ["barcode"])
+    return df["barcode"].tolist()
 
 
 def count_snvs_per_cb(snv_file, cb_list, output_file):
@@ -1901,6 +1957,16 @@ def main(config_path):
     snv_union_cfg = file_paths.get("snv_union", "auto")
 
     _validate_config_inputs(samples_cfg, af_filter_enabled, snv_union_cfg)
+
+    if data_type == "spatial":
+        barcode_reader = read_cb_list_spatial
+    elif data_type == "sc":
+        barcode_reader = read_cb_list_sc
+    else:
+        raise ValueError("Invalid data_type specified in config. Must be 'spatial' or 'sc'.")
+    for sample_name, sconf in samples_cfg.items():
+        barcode_reader(sconf["cb"])
+        logger.info("Validated barcode file for sample %s: %s", sample_name, sconf["cb"])
 
     logger.info("All input files verified successfully")
 
