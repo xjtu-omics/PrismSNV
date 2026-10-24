@@ -96,8 +96,6 @@ snv_eff:
   celltype_key: cell_cluster
   # Leiden clustering resolution used for cell clustering.
   cluster_resolution: 0.4
-  # If true, score SNVs without splitting by cell type.
-  cell_type_free: false
   # Device for SNV effect training.
   device: cuda
   # Evaluate a versioned SNV checkpoint with matching features, batches, and model dimensions.

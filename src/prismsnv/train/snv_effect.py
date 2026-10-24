@@ -42,7 +42,6 @@ try:
         _read_annotation_table,
         _strip_distributed_prefix,
         align_adata_rna_with_genes,
-        batch_score_all_snvs,
         batch_score_snvs_by_cell,
         cluster_cells,
         compute_cell_perturbation_scores,
@@ -82,7 +81,6 @@ except ImportError:
         _read_annotation_table,
         _strip_distributed_prefix,
         align_adata_rna_with_genes,
-        batch_score_all_snvs,
         batch_score_snvs_by_cell,
         cluster_cells,
         compute_cell_perturbation_scores,
@@ -965,7 +963,6 @@ def main_run(
     result_folder: str = "./snv_result",
     celltype_key: str = "cell_cluster",
     pair_chunk: int = DEFAULT_PAIR_CHUNK,
-    cell_type_free: bool = False,
     rna_batch_key: str = "batch",
     snv_batch_key: str = "sample",
     cluster_resolution: float = RESOLUTION,
@@ -1262,48 +1259,6 @@ def main_run(
             per_cell_snv_scores.to_csv(per_cell_scores_path, index=False)
         log(f"[INFO] Saved per-cell SNV perturbation scores to {per_cell_scores_path}")
 
-    if cell_type_free:
-        log("[INFO] Cell-type-free mode enabled: scoring SNVs using all carrier cells.")
-
-        if not top_snv_names:
-            log("[WARN] No SNVs passed the latent-contribution prefilter; skipping scoring.")
-            if is_rank0 and not eval_only:
-                _save_snv_name_array(
-                    model_ckpt + ".final_snvs.npy",
-                    [],
-                    "final scored SNV list",
-                )
-            _cleanup_distributed()
-            return
-        df_scores = batch_score_all_snvs(
-            model,
-            X_tensor,
-            G_tensor,
-            B_tensor,
-            snv_indices=top_snv_indices,
-            snv_names=top_snv_names,
-            gene_names=gene_names,
-            ann_df=ann_df,
-            device=device,
-            cell_batch=attn_batch,
-            pair_chunk=pair_chunk,
-        )
-
-        scores_path = os.path.join(result_folder, "snv_perturbation_scores.csv")
-        if is_rank0:
-            df_scores.to_csv(scores_path, index=False)
-            if not eval_only:
-                _save_snv_name_array(
-                    model_ckpt + ".final_snvs.npy",
-                    top_snv_names,
-                    "final scored SNV list",
-                )
-        if dist.is_initialized():
-            dist.barrier()
-        log(f"[INFO] Saved cell-type-free SNV perturbation scores to {scores_path}")
-        _cleanup_distributed()
-        return
-
     # scoring
     log("[INFO] Score selected SNVs counterfactually (sparse)")
 
@@ -1574,7 +1529,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         parser.error("cluster_resolution must be a numeric value greater than 0.")
     if cluster_resolution <= 0.0:
         parser.error("cluster_resolution must be greater than 0.")
-    cell_type_free = bool(yaml_config.get("cell_type_free", False))
     freeze_encoder = bool(
         yaml_config.get("freeze_encoder", yaml_config.get("freeze_backbone", False))
     )
@@ -1708,7 +1662,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         result_folder=result_folder,
         celltype_key=celltype_key,
         cluster_resolution=cluster_resolution,
-        cell_type_free=cell_type_free,
         pair_chunk=pair_chunk,
         rna_batch_key=rna_batch_key,
         snv_batch_key=snv_batch_key,
