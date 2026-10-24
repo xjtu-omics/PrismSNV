@@ -9,7 +9,7 @@
 <br>
 
 ![Linux](https://img.shields.io/badge/Linux-blue?logo=Linux&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.10%2B-green?logo=python&logoColor=white&labelColor=yellow)
+![Python](https://img.shields.io/badge/Python-3.12%2B-green?logo=python&logoColor=white&labelColor=yellow)
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 ![License](https://img.shields.io/github/license/xjtu-omics/PrismSNV)
 ![Issues](https://img.shields.io/github/issues/xjtu-omics/PrismSNV)
