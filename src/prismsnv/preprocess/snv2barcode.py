@@ -28,6 +28,7 @@ matplotlib.use("Agg")
 pysam.set_verbosity(0)
 logger = logging.getLogger(__name__)
 SNV_PATTERN = re.compile(r"^(chr[^:]+|[^:]+):(\d+)_([^>]+)>([^>]+)$", re.IGNORECASE)
+SNV_ALLELES_PATTERN = re.compile(r"[ACGT]>[ACGT](?:,[ACGT])*", re.IGNORECASE)
 REQUIRED_SAMPLE_FILES = ("bam", "vcf", "cb")
 SAMPLE_FILE_LABELS = {
     "bam": "BAM",
@@ -60,6 +61,16 @@ def read_snv_positions(snv_file):
             if line.startswith("#"):
                 continue
             parts = line.strip().split()
+            if len(parts) >= 4:
+                ref_index, alt_index = (3, 4) if len(parts) >= 5 else (2, 3)
+                ref, alt_text = parts[ref_index], parts[alt_index]
+                if SNV_ALLELES_PATTERN.fullmatch(f"{ref}>{alt_text}") is None:
+                    raise ValueError(
+                        "Only single-nucleotide A/C/G/T variants are supported; "
+                        f"got {parts[0]}:{parts[1]} {ref}>{alt_text}."
+                    )
+                parts[ref_index] = ref.upper()
+                parts[alt_index] = alt_text.upper()
             snv_positions.append(parts)
     logger.info("Loaded %d SNV positions", len(snv_positions))
     return snv_positions
@@ -748,7 +759,6 @@ class _SnvTask(NamedTuple):
 def _parse_snv_records(snv_positions):
     records = []
     for snv in snv_positions:
-        # Expand each ALT while preserving the VCF/TSV interpretation and spelling.
         if len(snv) >= 5:
             ref, alt_text = snv[3], snv[4]
         elif len(snv) >= 4:
@@ -756,6 +766,7 @@ def _parse_snv_records(snv_positions):
         else:
             logger.warning("Skipping malformed SNV record: %s", snv)
             continue
+
         records.extend((snv[0], int(snv[1]), ref, alt) for alt in alt_text.split(","))
     return records
 
