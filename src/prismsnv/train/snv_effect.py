@@ -104,13 +104,11 @@ except ImportError:
 try:  # pragma: no cover - import resolution differs for package/script usage
     from .pre_train import (
         safe_load_backbone_into_snv_model,
-        load_backbone_into_snv_model,
         freeze_encoder_only,
     )
 except ImportError:  # pragma: no cover - fallback when executed as a script
     from pre_train import (  # type: ignore
         safe_load_backbone_into_snv_model,
-        load_backbone_into_snv_model,
         freeze_encoder_only,
     )
 
@@ -614,25 +612,6 @@ class SNVPerturbationModel(nn.Module):
         )
         kl = torch.clamp(kl_per_dim, min=free_bits).sum(dim=1).mean()
         return nb_nll + kl
-
-    def loss_fn(
-        self,
-        expression_tensor: torch.Tensor,
-        snv_tensor: torch.Tensor,
-        batch_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        latent_mean, latent_log_var = self.encode(expression_tensor)
-        latent_sample = self.reparameterize(latent_mean, latent_log_var)
-        reconstruction_mean, dispersion = self._decode_train_sparse(
-            latent_sample, snv_tensor, batch_indices
-        )
-        return self.compute_loss(
-            expression_tensor,
-            reconstruction_mean,
-            dispersion,
-            latent_mean,
-            latent_log_var,
-        )
 
 
 # Training

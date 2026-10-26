@@ -572,66 +572,6 @@ def safe_load_backbone_into_snv_model(
     return snv_model
 
 
-def load_backbone_into_snv_model(snv_model: nn.Module, backbone_ckpt: str, device="cuda"):
-    """Transfer encoder/decoder/raw_theta weights from the pretrained backbone into the SNV model.
-
-    Because the submodule names and shapes match, the weights can be loaded with
-    ``strict=False`` while only copying the tensors that have an exact name match.
-    """
-    # Build a temporary backbone with identical architecture to load pretrained weights
-    backbone_model = RNAOnlyBackbone(
-        n_genes=snv_model.n_genes,
-        latent_dim=snv_model.latent_dim,
-        mu_activation="identity",
-    ).to(device)
-    backbone_model.load_state_dict(torch.load(backbone_ckpt, map_location=device), strict=True)
-
-    # Collect the SNV model state_dict and replace the parameters that match the backbone
-    target_state_dict = snv_model.state_dict()
-
-    # Keep track of parameters that were aligned based on an exact name match
-    keys_to_replace = []
-    for key in target_state_dict.keys():
-        if key.startswith("encoder.") or key in (
-            "encoder_mu.weight",
-            "encoder_mu.bias",
-            "encoder_log_var.weight",
-            "encoder_log_var.bias",
-        ) or key.startswith("decoder.") or key == "raw_theta":
-            keys_to_replace.append(key)
-
-    backbone_state_dict = backbone_model.state_dict()
-    for key in keys_to_replace:
-        if key in backbone_state_dict and target_state_dict[key].shape == backbone_state_dict[key].shape:
-            target_state_dict[key] = backbone_state_dict[key].clone()
-
-    snv_model.load_state_dict(target_state_dict, strict=False)
-    log(f"[Transfer] Copied backbone weights into SNV model ({len(keys_to_replace)} keys).")
-    return snv_model
-
-
-def freeze_backbone_train_snv_only(snv_model: nn.Module):
-    # Freeze encoder/decoder/raw_theta to preserve pretrained representations
-    for p in snv_model.encoder.parameters(): p.requires_grad = False
-    snv_model.encoder_mu.weight.requires_grad = False
-    snv_model.encoder_mu.bias.requires_grad = False
-    snv_model.encoder_log_var.weight.requires_grad = False
-    snv_model.encoder_log_var.bias.requires_grad = False
-
-    for p in snv_model.decoder.parameters(): p.requires_grad = False
-    if hasattr(snv_model, "raw_theta"):
-        snv_model.raw_theta.requires_grad = False
-
-    # Only allow SNV-specific submodules to be updated during finetuning
-    trainables = []
-    for name, p in snv_model.named_parameters():
-        if p.requires_grad and any(k in name for k in ["snv_embedding", "cond_mlp", "attn_mlp", "snv_proj"]):
-            trainables.append(p)
-
-    log(f"[Finetune] Trainable SNV params: {sum(p.numel() for p in trainables):,}")
-    return trainables
-
-
 def freeze_encoder_only(model: nn.Module):
     """Freeze encoder side only; keep decoder & SNV heads trainable."""
     for name, p in model.named_parameters():
