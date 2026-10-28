@@ -553,9 +553,9 @@ class SNVPerturbationModel(nn.Module):
         delta_ratio_over_cap = torch.zeros((), device=delta_latent.device)
         if delta_ratio_cap is not None:
             penalty_ratio = delta_norm / (z_norm.detach() + 1e-8)
-            excess_ratio = F.relu(penalty_ratio - delta_ratio_cap)
             delta_ratio_over_cap = (penalty_ratio > delta_ratio_cap).float().mean()
             if delta_ratio_lambda > 0.0:
+                excess_ratio = F.relu(penalty_ratio - delta_ratio_cap)
                 delta_ratio_penalty = delta_ratio_lambda * excess_ratio.pow(2).mean()
                 loss = loss + delta_ratio_penalty
         monitor_metrics = torch.stack(
@@ -672,7 +672,7 @@ def train_snv_perturbation_model(
     if device is None:
         device = get_device()
 
-    enable_rank_loss = RANK_LOSS_ENABLED
+    enable_rank_loss = RANK_LOSS_ENABLED and rank_lambda_max > 0.0
     rank_warmup_epochs = RANK_WARMUP_EPOCHS
     rank_min_diff_snv = RANK_MIN_DIFF_SNV
     rank_start_epoch = RANK_START_EPOCH
@@ -697,34 +697,34 @@ def train_snv_perturbation_model(
         optimizer_groups.append({"params": decoder_parameters, "lr": decoder_lr})
     opt = torch.optim.Adam(optimizer_groups, lr=lr, weight_decay=weight_decay)
 
-    copied_keys = set(getattr(target_model, "_backbone_copied_keys", ()))
-    trainable_decoder_tensor_count = sum(
-        1 for parameter in target_model.decoder.parameters() if parameter.requires_grad
-    )
-    decoder_l2_sp_pairs = [
-        (parameter, parameter.detach().clone())
-        for name, parameter in target_model.named_parameters()
-        if (
-            parameter.requires_grad
-            and name.startswith("decoder.")
-            and name in copied_keys
+    decoder_l2_sp_pairs = []
+    if decoder_l2_sp_lambda > 0.0:
+        # Allocate reference tensors only while the anchoring loss is enabled.
+        copied_keys = set(getattr(target_model, "_backbone_copied_keys", ()))
+        trainable_decoder_tensor_count = sum(
+            1 for parameter in target_model.decoder.parameters() if parameter.requires_grad
         )
-    ]
-    if decoder_l2_sp_lambda > 0.0 and not decoder_l2_sp_pairs:
-        log(
-            "[WARN] Decoder L2-SP requested, but no trainable decoder parameters "
-            "were copied from the pretrained backbone; L2-SP is disabled."
-        )
-    elif (
-        decoder_l2_sp_lambda > 0.0
-        and len(decoder_l2_sp_pairs) < trainable_decoder_tensor_count
-    ):
-        log(
-            "[WARN] Decoder L2-SP anchors only %d/%d trainable decoder tensors; "
-            "uncopied tensors use the lower decoder learning rate without anchoring.",
-            len(decoder_l2_sp_pairs),
-            trainable_decoder_tensor_count,
-        )
+        decoder_l2_sp_pairs = [
+            (parameter, parameter.detach().clone())
+            for name, parameter in target_model.named_parameters()
+            if (
+                parameter.requires_grad
+                and name.startswith("decoder.")
+                and name in copied_keys
+            )
+        ]
+        if not decoder_l2_sp_pairs:
+            log(
+                "[WARN] Decoder L2-SP requested, but no trainable decoder parameters "
+                "were copied from the pretrained backbone; L2-SP is disabled."
+            )
+        elif len(decoder_l2_sp_pairs) < trainable_decoder_tensor_count:
+            log(
+                "[WARN] Decoder L2-SP anchors only %d/%d trainable decoder tensors; "
+                "uncopied tensors use the lower decoder learning rate without anchoring.",
+                len(decoder_l2_sp_pairs),
+                trainable_decoder_tensor_count,
+            )
     is_rank0 = (not use_distributed) or rank == 0
     if is_rank0:
         log(
