@@ -668,6 +668,7 @@ def main(argv=None):
         expected_doublet_rate=expected_doublet_rate,
         remove_scrublet=remove_scrublet,
         mt_percent=mt_percent,
+        batch_key=batch_key,
     )
 
     training_defaults = {

@@ -579,8 +579,13 @@ def align_and_preprocess_adata(
     expected_doublet_rate: float = 0.05,
     remove_scrublet: bool = False,
     mt_percent: float = 15,
+    batch_key: str = "batch",
 ):
-    """Align genes between two RNA h5ad files and save the processed results."""
+    """Align genes between two RNA h5ad files and save the processed results.
+
+    ``batch_key`` is used for per-batch total-count QC and must match the
+    column consumed by the pretraining batch embedding.
+    """
     log(f"[INFO] Loading data {pretrain_path} & {finetune_path}.")
     adata_pre = sc.read_h5ad(pretrain_path)
     adata_ft = sc.read_h5ad(finetune_path)
@@ -589,8 +594,8 @@ def align_and_preprocess_adata(
     sc.pp.filter_cells(adata_ft, min_genes=100)
     sc.pp.filter_genes(adata_pre, min_cells=100)
     sc.pp.filter_genes(adata_ft, min_cells=100)
-    adata_pre = remove_high_total_counts_by_batch(adata_pre, batch_key="batch", percentile=99.5)
-    adata_ft = remove_high_total_counts_by_batch(adata_ft, batch_key="batch", percentile=99.5)
+    adata_pre = remove_high_total_counts_by_batch(adata_pre, batch_key=batch_key, percentile=99.5)
+    adata_ft = remove_high_total_counts_by_batch(adata_ft, batch_key=batch_key, percentile=99.5)
     adata_pre = remove_high_mt(adata_pre, mt_percent)
     adata_ft = remove_high_mt(adata_ft, mt_percent)
     # Optional scrublet.
