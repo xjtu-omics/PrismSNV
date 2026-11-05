@@ -932,7 +932,6 @@ def main_run(
     score_attn_batch: Optional[int] = None,
     score_cell_batch: Optional[int] = None,
     device: Optional[torch.device] = None,
-    seed: int = 42,
     backbone_ckpt: Optional[str] = None,
     freeze_encoder: bool = True,
     gene_list_path: Optional[str] = None,
@@ -964,7 +963,7 @@ def main_run(
         score_attn_batch = attn_batch
     if score_cell_batch is None:
         score_cell_batch = attn_batch
-    set_seed(seed)
+    set_seed(42)
     is_rank0 = (not use_distributed) or rank == 0
     if is_rank0:
         log("=" * 50)
@@ -1466,7 +1465,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     attn_batch = yaml_config.get("attn_batch", 256)
     score_attn_batch = yaml_config.get("score_attn_batch", attn_batch)
     score_cell_batch = yaml_config.get("score_cell_batch", attn_batch)
-    seed = yaml_config.get("seed", 42)
     rank_lambda_max = yaml_config.get("rank_lambda_max", RANK_LAMBDA_MAX)
     rank_margin_max = yaml_config.get("rank_margin_max", RANK_MARGIN_MAX)
     decoder_lr = yaml_config.get("decoder_lr", DEFAULT_DECODER_LR)
@@ -1531,12 +1529,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         top_k_attention = int(top_k_attention)
         attn_batch = int(attn_batch)
         pair_chunk = int(pair_chunk)
-        seed = int(seed)
     except (TypeError, ValueError):
         parser.error(
             "min_cnt, n_top, batch_size_train, num_epochs, latent_dim, snv_emb_dim, "
-            "top_k_attention, attn_batch, and pair_chunk must be integer values, and "
-            "seed must be an integer."
+            "top_k_attention, attn_batch, and pair_chunk must be integer values."
         )
     for int_key, int_value in (
         ("min_cnt", min_cnt),
@@ -1635,7 +1631,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         score_attn_batch=score_attn_batch,
         score_cell_batch=score_cell_batch,
         device=device,
-        seed=seed,
         freeze_encoder=freeze_encoder,
         eval_only=eval_only,
         result_folder=result_folder,

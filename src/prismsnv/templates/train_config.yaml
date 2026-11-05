@@ -75,8 +75,6 @@ snv_eff:
   # Batch size used by score_by_celltype() for per-cell counterfactual SNV scoring.
   # If omitted, it falls back to attn_batch.
   score_cell_batch: 128
-  # Random seed for reproducibility.
-  seed: 42
   # Maximum weight of the rank-loss term that compares true SNV assignments against same-batch shuffled negatives.
   # Set to 0 to skip negative sampling and the extra rank-loss forward pass.
   rank_lambda_max: 0.05
