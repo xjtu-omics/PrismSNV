@@ -18,9 +18,9 @@ pre_train:
     num_epochs: 200
     # Latent dimension.
     latent_dim: 128
-    # Activation on decoder mean for UMI-like counts.
+    # Decoder mean activation for raw UMI counts; only 'umi' is supported.
     mu_activation: umi
-    # Use negative binomial likelihood for gene counts.
+    # Must be true: only negative-binomial reconstruction is supported.
     use_nb: true
     # Batch size for pretraining.
     batch_size: 512
@@ -53,7 +53,7 @@ snv_eff:
   # Optional CSV path with SNV annotations (for extra metadata only).
   # Leave empty or remove this key to run without annotation metadata.
   ann_csv:
-  # Minimum read count for keeping an SNV.
+  # Minimum number of cells required for each genotype (+1 and -1) to keep an SNV.
   min_cnt: 50
   # Keep top N SNVs after filtering/ranking (for plots only).
   n_top: 50

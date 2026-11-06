@@ -29,15 +29,24 @@ def _coerce_str_to_number(name, value, cast):
 
 
 def _normalize_mu_activation(mu_activation: str) -> str:
-    """Normalize and validate ``mu_activation``."""
+    """Validate the only supported decoder mean activation."""
 
     activation = str(mu_activation).strip().lower()
-    if activation not in {"umi", "softplus", "identity"}:
+    if activation != "umi":
         raise ValueError(
-            "mu_activation must be one of {'umi', 'softplus', 'identity'}, "
+            "Only mu_activation='umi' is supported for raw UMI counts; "
             f"got {mu_activation!r}."
         )
     return activation
+
+
+def _require_nb(use_nb: bool) -> None:
+    """Reject unsupported reconstruction modes, including non-boolean values."""
+    if use_nb is not True:
+        raise ValueError(
+            "Only negative-binomial reconstruction of raw UMI counts is supported; "
+            f"use_nb must be true, got {use_nb!r}."
+        )
 
 
 class GradientReversal(Function):
@@ -156,13 +165,8 @@ class RNAOnlyBackbone(nn.Module):
         return mu + noise * stddev
 
     def decode_logits_to_mu(self, decoder_output: torch.Tensor):
-        if self.mu_activation == "umi":
-            decoder_output_clamped = torch.clamp(decoder_output, max=20)
-            return torch.exp(decoder_output_clamped)
-        elif self.mu_activation == "softplus":
-            return F.softplus(decoder_output)
-        else:
-            return decoder_output
+        decoder_output_clamped = torch.clamp(decoder_output, max=20)
+        return torch.exp(decoder_output_clamped)
 
     def decode(self, latent: torch.Tensor, batch_indices: Optional[torch.Tensor] = None):
         """Decode latent representations into gene expression means and dispersion parameters.
@@ -200,13 +204,11 @@ class RNAOnlyBackbone(nn.Module):
         return -log_prob_nb.mean()
 
     def loss_fn(self, x: torch.Tensor, use_nb: bool = True, beta: float = 1.0, batch_ids: Optional[torch.Tensor] = None):
+        _require_nb(use_nb)
         mu, log_var = self.encode(x)
         z = self.reparameterize(mu, log_var)
         mu_out, theta = self.decode(z, batch_indices=batch_ids)
-        if use_nb:
-            recon = self.nb_nll(x, mu_out, theta)
-        else:
-            recon = F.mse_loss(mu_out, x, reduction="mean")
+        recon = self.nb_nll(x, mu_out, theta)
         free_bits = 0.5
         kl_per_dim = 0.5 * (mu.pow(2) + log_var.exp() - log_var - 1.0)
         kl = torch.clamp(kl_per_dim, min=free_bits).sum(dim=1).mean()
@@ -229,8 +231,8 @@ class RNAOnlyBackbone(nn.Module):
 def pretrain_rna_backbone(
         adata_path: str,
         latent_dim: int = 128,
-        mu_activation: str = "umi",  # "umi" for UMI counts; "identity"/"softplus" for corrected/normalized data
-        use_nb: bool = False,  # True for raw counts; False for corrected/log data
+        mu_activation: str = "umi",  # Only the exponential UMI mean is supported.
+        use_nb: bool = True,  # Must be True; reconstruction uses raw UMI counts.
         batch_size: int = 512,
         epochs: int = 100,
         lr: float = 1e-3,
@@ -264,6 +266,7 @@ def pretrain_rna_backbone(
         "lambda_adv_warmup_epochs", lambda_adv_warmup_epochs, int
     )
     mu_activation = _normalize_mu_activation(mu_activation)
+    _require_nb(use_nb)
     if disc_hidden_dim is not None:
         disc_hidden_dim = _coerce_str_to_number("disc_hidden_dim", disc_hidden_dim, int)
 
@@ -294,19 +297,7 @@ def pretrain_rna_backbone(
     use_batch_embedding = batch_ids_tensor is not None
     log("======== Pretraining Configuration ========")
     log(f"[Config] The mu activation: {mu_activation}")
-    log(f"[Config] Reconstruction loss: {'NB' if use_nb else 'MSE'}")
-    if use_nb and mu_activation != "umi":
-        log(
-            f"[WARNING] use_nb=True expects raw UMI counts and a 'umi' mu_activation, "
-            f"but mu_activation={mu_activation!r}. The NB likelihood may be mismatched "
-            "with the decoder output scale."
-        )
-    if (not use_nb) and mu_activation == "umi":
-        log(
-            "[WARNING] use_nb=False (MSE) expects corrected/log-normalized data, but "
-            "mu_activation='umi' applies an exponential to the decoder output. This can "
-            "cause a scale mismatch; consider 'identity' or 'softplus'."
-        )
+    log("[Config] Reconstruction loss: NB (raw UMI counts)")
     log(f"[Config] Total epochs: {epochs}")
     log(f"[Config] Use batch_embedding: {use_batch_embedding}")
     log(f"[Config] The batch_key: {batch_key}")
@@ -660,17 +651,6 @@ def main(argv=None):
     if not (0.0 <= mt_percent <= 100.0):
         parser.error("mt_percent must be in [0, 100].")
 
-    aligned_pre, aligned_ft = align_and_preprocess_adata(
-        pretrain_adata,
-        finetune_adata,
-        pretrain_out,
-        finetune_out,
-        expected_doublet_rate=expected_doublet_rate,
-        remove_scrublet=remove_scrublet,
-        mt_percent=mt_percent,
-        batch_key=batch_key,
-    )
-
     training_defaults = {
         "latent_dim": 128,
         "mu_activation": "umi",
@@ -692,6 +672,26 @@ def main(argv=None):
     training_kwargs = {}
     for key, default in training_defaults.items():
         training_kwargs[key] = pick(key, train_cfg, yaml_config, default=default)
+
+    # Reject unsupported modes before preprocessing writes aligned data.
+    try:
+        training_kwargs["mu_activation"] = _normalize_mu_activation(
+            training_kwargs["mu_activation"]
+        )
+        _require_nb(training_kwargs["use_nb"])
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    aligned_pre, aligned_ft = align_and_preprocess_adata(
+        pretrain_adata,
+        finetune_adata,
+        pretrain_out,
+        finetune_out,
+        expected_doublet_rate=expected_doublet_rate,
+        remove_scrublet=remove_scrublet,
+        mt_percent=mt_percent,
+        batch_key=batch_key,
+    )
 
     training_kwargs.update({
         "adata_path": aligned_pre,
