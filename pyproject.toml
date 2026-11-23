@@ -49,7 +49,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/xjtu-omics/PrismSNV"
-Documentation = "https://muledoc.readthedocs.io/en/latest/index.html"
+Documentation = "https://prismsnvdoc.readthedocs.io/en/latest/index.html"
 Issues = "https://github.com/xjtu-omics/PrismSNV/issues"
 
 [project.scripts]
