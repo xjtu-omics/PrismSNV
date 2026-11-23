@@ -52,7 +52,7 @@ Single-nucleotide variants (SNVs) are central to tumor evolution, yet their func
 ## 🏗️ Architecture
 
 <div align="center">
-  <img src="https://github.com/PSSUN/MuleDoc/blob/main/docs/_static/Figure-1.png" height="500" alt="PrismSNV architecture" />
+  <img src="https://github.com/PSSUN/PrismsnvDoc/blob/main/docs/_static/Figure-1.png" height="500" alt="PrismSNV architecture" />
 </div>
 
 ---
