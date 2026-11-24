@@ -23,7 +23,7 @@
 ## 📚 Table of Contents
 
 - [Overview](#-overview)
-- [Video](#-video-demo)
+- [Video](#-video)
 - [Architecture](#-architecture)
 - [Local Installation](#-local-installation)
 - [Quick Start](#-quick-start)
@@ -53,14 +53,9 @@ Single-nucleotide variants (SNVs) are central to tumor evolution, yet their func
 ## 🎬 Video
 
 <div align="center">
-  <a href="https://www.youtube.com/watch?v=3kDo3-dVVCA" target="_blank">
-    <img src="https://img.youtube.com/vi/3kDo3-dVVCA/maxresdefault.jpg" width="75%" alt="PrismSNV Conceptual Animation" />
-  </a>
+  <video src="https://github.com/user-attachments/assets/fd45c054-6e67-4822-8ce0-07aef3844eae" width="85%" controls></video>
   <br>
-  <br>
-  <a href="https://www.youtube.com/watch?v=3kDo3-dVVCA" target="_blank">
-    <img src="https://img.shields.io/badge/YouTube-Watch%20Video-red?style=for-the-badge&logo=youtube&logoColor=white" alt="Watch on YouTube" />
-  </a>
+  <p><em>PrismSNV conceptual animation · Also available on <a href="https://www.youtube.com/watch?v=3kDo3-dVVCA" target="_blank">YouTube</a></em></p>
 </div>
 
 ---
