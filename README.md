@@ -20,19 +20,6 @@
 
 ---
 
-## 📚 Table of Contents
-
-- [Overview](#-overview)
-- [Video](#-video)
-- [Architecture](#-architecture)
-- [Local Installation](#-local-installation)
-- [Quick Start](#-quick-start)
-- [Documentation](#-documentation)
-- [Contact](#-contact)
-- [License](#-license)
-
----
-
 ## 🧬 Overview
 
 Single-nucleotide variants (SNVs) are central to tumor evolution, yet their functional consequences remain largely unresolved at single-cell resolution. Crucially, it remains unknown how the impact of specific SNVs varies across patients, cell types, or cellular states — hindering mechanistic understanding and therapeutic stratification. Current strategies operate predominantly at the bulk level and depend on population recurrence or evolutionary constraint, capturing signatures of long-term selection rather than direct, acute cellular effects.
@@ -54,8 +41,6 @@ Single-nucleotide variants (SNVs) are central to tumor evolution, yet their func
 
 <div align="center">
   <video src="https://github.com/user-attachments/assets/fd45c054-6e67-4822-8ce0-07aef3844eae" width="85%" controls></video>
-  <br>
-  <p><em>PrismSNV conceptual animation</em></p>
 </div>
 
 ---
