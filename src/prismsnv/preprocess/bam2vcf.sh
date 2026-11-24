@@ -25,6 +25,7 @@ options:
 
 notes:
   VarScan v2.4.6 is bundled and used automatically; Java is required.
+  mpileup is streamed to VarScan without writing an intermediate .mpileup file.
   --reference requires a readable FASTA index at <reference.fa>.fai
   Missing BAM indexes are created with samtools index during preflight.
 
@@ -380,7 +381,6 @@ run_one_bam() {
     PREFIX=$(get_bam_prefix "$BAM")
 
     local BAM_FILT="${OUT_DIR}/${PREFIX}.f1804q20.bam"
-    local MPILEUP="${OUT_DIR}/${PREFIX}.f1804q20.mpileup"
     local VCF="${OUT_DIR}/${PREFIX}.f1804q20.vcf"
     local VCF_NO_EDIT="${OUT_DIR}/${PREFIX}.f1804q20.no_rna_editing.vcf"
 
@@ -407,29 +407,29 @@ run_one_bam() {
         mv -f "$BAM_INDEX_TMP" "$BAM_INDEX"
     fi
 
-    # Step 3: Generate mpileup
-    if has_nonempty_file "$MPILEUP"; then
-        echo "[$(date)] SKIP existing mpileup: $MPILEUP"
-    else
-        echo "[$(date)] Generating mpileup: $BAM_FILT -> $MPILEUP"
-        run_stdout_to_file "$MPILEUP" \
-            samtools mpileup -B -q 20 -Q 20 -f "$REF_FA" "$BAM_FILT"
-    fi
-
-    # Step 4: Call SNVs with VarScan
+    # Step 3: Stream mpileup to VarScan and publish only a successful VCF
     if has_nonempty_file "$VCF"; then
         echo "[$(date)] SKIP existing VarScan VCF: $VCF"
     else
-        echo "[$(date)] Calling SNVs with VarScan: $MPILEUP -> $VCF"
-        run_stdout_to_file "$VCF" \
-            java -jar "$VARSCAN_JAR" mpileup2snp "$MPILEUP" \
+        echo "[$(date)] Streaming mpileup to VarScan: $BAM_FILT -> $VCF"
+        local VCF_TMP="${VCF}.tmp.$$"
+        rm -f "$VCF_TMP"
+        # pipefail propagates failures from either stage of the pipeline.
+        if samtools mpileup -B -q 20 -Q 20 -f "$REF_FA" "$BAM_FILT" |
+            java -jar "$VARSCAN_JAR" mpileup2snp \
                 --min-coverage 8 \
                 --min-var-freq 0.01 \
                 --output-vcf 1 \
-                --min-reads2 3
+                --min-reads2 3 > "$VCF_TMP"; then
+            mv -f "$VCF_TMP" "$VCF" || return 1
+        else
+            rm -f "$VCF_TMP"
+            echo "ERROR: mpileup/VarScan pipeline failed for BAM: $BAM_FILT" >&2
+            return 1
+        fi
     fi
 
-    # Step 5: Remove RNA editing sites
+    # Step 4: Remove RNA editing sites
     if has_nonempty_file "$VCF_NO_EDIT"; then
         echo "[$(date)] SKIP existing RNA-editing filtered VCF: $VCF_NO_EDIT"
     else
