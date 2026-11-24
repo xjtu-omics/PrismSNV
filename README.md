@@ -23,7 +23,7 @@
 ## 📚 Table of Contents
 
 - [Overview](#-overview)
-- [Video Demo](#-video-demo)
+- [Video](#-video-demo)
 - [Architecture](#-architecture)
 - [Local Installation](#-local-installation)
 - [Quick Start](#-quick-start)
