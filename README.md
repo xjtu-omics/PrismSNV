@@ -23,11 +23,12 @@
 ## 📚 Table of Contents
 
 - [Overview](#-overview)
+- [Video Demo](#-video-demo)
 - [Architecture](#-architecture)
-- [Local Installation](#️-local-installation)
+- [Local Installation](#-local-installation)
 - [Quick Start](#-quick-start)
 - [Documentation](#-documentation)
-- [Contact](#️-contact)
+- [Contact](#-contact)
 - [License](#-license)
 
 ---
@@ -46,6 +47,21 @@ Single-nucleotide variants (SNVs) are central to tumor evolution, yet their func
 | 🧪 **Endogenous perturbation modeling** | Treats each SNV as a natural perturbation of cellular state, capturing acute effects instead of long-term selection signals. |
 | 📐 **Transcriptomic displacement** | Quantifies mutation-induced displacement in transcriptomic space as a direct readout of functional impact. |
 | 🕰️ **Spatiotemporal dynamics** | Uncovers how individual SNVs change roles throughout tumor evolution. |
+
+---
+
+## 🎬 Video
+
+<div align="center">
+  <a href="https://www.youtube.com/watch?v=3kDo3-dVVCA" target="_blank">
+    <img src="https://img.youtube.com/vi/3kDo3-dVVCA/maxresdefault.jpg" width="75%" alt="PrismSNV Conceptual Animation" />
+  </a>
+  <br>
+  <br>
+  <a href="https://www.youtube.com/watch?v=3kDo3-dVVCA" target="_blank">
+    <img src="https://img.shields.io/badge/YouTube-Watch%20Video-red?style=for-the-badge&logo=youtube&logoColor=white" alt="Watch on YouTube" />
+  </a>
+</div>
 
 ---
 
