@@ -135,6 +135,31 @@ prismsnv pre_train -y train_config.yaml
 prismsnv snv_effect --n_gpu 3 -y train_config.yaml
 ```
 
+#### 📝 `snv2barcode` configuration (`snv2barcode_config.yaml`)
+
+Step 2 requires a YAML file to specify sample inputs and processing settings. The filtered VCFs generated from step 1 (`bam2vcf`) and cell barcode whitelists are mapped here:
+
+```yaml
+settings:
+  output_dir: ./snv2barcode_out   # Output directory for barcode-by-SNV matrices
+  percentage: 0.05                 # Variant frequency threshold for VCF filtering (e.g. 0.05)
+  threads: 8                       # Number of worker threads
+  data_type: sc                    # 'sc' for single-cell or 'spatial' for spatial transcriptomics
+  count_unit: reads                # 'reads' or 'umis' (default: reads)
+
+samples:
+  sample1:
+    bam: sample1.bam               # Input BAM file
+    vcf: ./snv_call_out/sample1.vcf# Filtered VCF from bam2vcf
+    cb: sample1_barcodes.txt       # Single-column cell barcode whitelist
+  sample2:
+    bam: sample2.bam
+    vcf: ./snv_call_out/sample2.vcf
+    cb: sample2_barcodes.txt
+```
+
+> 💡 **Data flow**: `snv2barcode` generates per-sample AnnData matrices and a merged matrix `all_samples_merged_barcode_snv_matrix.h5ad` in `output_dir`. In `train_config.yaml`, set `snv_eff.adata_snv` to this merged `.h5ad` file for steps 3 and 4.
+
 Inspect any subcommand without processing data:
 
 ```bash
@@ -164,4 +189,4 @@ If you encounter any issues during use, please try updating PrismSNV to the late
 
 This project is licensed under the [GNU General Public License v3.0 (GPLv3)](./LICENSE).
 
-<img src="https://raw.githubusercontent.com/trinib/trinib/82213791fa9ff58d3ca768ddd6de2489ec23ffca/images/footer.svg" width="100%">
+<img src="./footer.svg" width="100%" alt="Footer banner" />
